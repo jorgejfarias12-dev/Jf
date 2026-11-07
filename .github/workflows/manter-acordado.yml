@@ -1,0 +1,15 @@
+# Chama a aplicação de 10 em 10 minutos para o Render gratuito não a adormecer.
+# A recolha de dados corre dentro da aplicação; isto só a mantém acordada.
+name: Manter servico acordado
+
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+
+jobs:
+  chamar:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Chamar /saude
+        run: curl -fsS -m 120 --retry 3 --retry-delay 20 https://analise-futebol-1cpi.onrender.com/saude
