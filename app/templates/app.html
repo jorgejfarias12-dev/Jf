@@ -1,0 +1,405 @@
+<!doctype html>
+<html lang="pt-PT">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f1412">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Boletins">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="icon" href="/icone.svg">
+<link rel="apple-touch-icon" href="/icone.svg">
+<title>Futebol e Boletins</title>
+<style>
+  :root { --fundo:#f3f5f3; --cartao:#fff; --texto:#17201c; --suave:#5f6d67; --linha:#dde3df;
+          --marca:#14532d; --marca-texto:#fff; --verde:#16803c; --vermelho:#c0262d; --ambar:#a35d00;
+          --sel:#14532d; --sel-texto:#fff; }
+  @media (prefers-color-scheme: dark) {
+    :root { --fundo:#0f1412; --cartao:#19201d; --texto:#e9eeeb; --suave:#9aa8a1; --linha:#2b3430;
+            --marca:#1f7a45; --verde:#4cc684; --vermelho:#f2837f; --ambar:#e7a446;
+            --sel:#4cc684; --sel-texto:#0f1412; } }
+  * { box-sizing:border-box; -webkit-tap-highlight-color:transparent; }
+  html, body { margin:0; background:var(--fundo); color:var(--texto);
+               font:16px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+  header { position:sticky; top:0; z-index:5; background:var(--marca); color:var(--marca-texto);
+           padding:calc(env(safe-area-inset-top) + 12px) 16px 10px; }
+  header h1 { margin:0; font-size:1.15rem; }
+  header p { margin:2px 0 0; font-size:.8rem; opacity:.85; }
+  main { padding:12px 16px calc(84px + env(safe-area-inset-bottom)); max-width:640px; margin:0 auto; }
+  .separador { display:none; } .separador.ativo { display:block; }
+  .dias { display:flex; gap:8px; margin-bottom:12px; overflow-x:auto; }
+  .chip { border:1px solid var(--linha); background:var(--cartao); color:var(--texto);
+          padding:8px 14px; border-radius:999px; font:inherit; font-size:.9rem; white-space:nowrap; }
+  .chip.ativo { background:var(--marca); color:var(--marca-texto); border-color:var(--marca); }
+  h2.liga { font-size:.85rem; text-transform:uppercase; letter-spacing:.04em; color:var(--suave);
+            margin:18px 0 6px; }
+  .jogo { background:var(--cartao); border:1px solid var(--linha); border-radius:12px;
+          padding:10px 12px; margin-bottom:8px; }
+  .linha1 { display:flex; justify-content:space-between; align-items:center; gap:8px; }
+  .equipas { font-weight:600; }
+  .res { font-weight:800; font-size:1.1rem; font-variant-numeric:tabular-nums; min-width:44px; text-align:right; }
+  .info { font-size:.8rem; color:var(--suave); margin-top:2px; }
+  .vivo { color:var(--verde); font-weight:700; }
+  .escolhas { display:grid; grid-template-columns:repeat(6, 1fr); gap:6px; margin-top:8px; }
+  .escolhas button { font:inherit; font-weight:700; font-size:.9rem; padding:9px 0; border-radius:8px;
+                     border:1px solid var(--linha); background:var(--fundo); color:var(--texto); }
+  .escolhas button.sel { background:var(--sel); color:var(--sel-texto); border-color:var(--sel); }
+  .escolhas button:disabled { opacity:.35; }
+  .vazio { text-align:center; color:var(--suave); padding:40px 10px; }
+  .cartao { background:var(--cartao); border:1px solid var(--linha); border-radius:12px; padding:12px; margin-bottom:10px; }
+  .sel-linha { display:grid; grid-template-columns:1fr 84px 36px; gap:8px; align-items:center;
+               padding:8px 0; border-top:1px solid var(--linha); }
+  .sel-linha:first-child { border-top:0; }
+  .sel-nome { font-size:.9rem; } .sel-nome b { display:block; font-size:.95rem; }
+  input.num { width:100%; font:inherit; font-size:1rem; padding:9px 8px; border-radius:8px;
+              border:1px solid var(--linha); background:var(--fundo); color:var(--texto); text-align:center; }
+  .x { font:inherit; font-size:1.2rem; border:0; background:none; color:var(--suave); padding:6px; }
+  .totais { display:grid; grid-template-columns:1fr 1fr; gap:8px; margin-top:4px; }
+  .total { background:var(--fundo); border-radius:10px; padding:10px; text-align:center; }
+  .total span { display:block; font-size:.75rem; color:var(--suave); }
+  .total strong { font-size:1.25rem; font-variant-numeric:tabular-nums; }
+  label.campo { display:block; font-size:.85rem; color:var(--suave); margin:10px 0 4px; }
+  .botao { display:block; width:100%; font:inherit; font-weight:700; padding:13px; border-radius:10px;
+           border:0; background:var(--marca); color:var(--marca-texto); margin-top:10px; }
+  .botao.sec { background:var(--fundo); color:var(--texto); border:1px solid var(--linha); }
+  .aviso { border-left:4px solid var(--ambar); font-size:.9rem; }
+  .nota { font-size:.8rem; color:var(--suave); margin-top:8px; }
+  .estado-bol { font-size:.75rem; font-weight:700; padding:3px 8px; border-radius:999px; }
+  .ganho { background:color-mix(in srgb, var(--verde) 18%, transparent); color:var(--verde); }
+  .perdido { background:color-mix(in srgb, var(--vermelho) 18%, transparent); color:var(--vermelho); }
+  .pendente { background:color-mix(in srgb, var(--ambar) 18%, transparent); color:var(--ambar); }
+  .bol-sel { font-size:.85rem; padding:4px 0; display:flex; justify-content:space-between; gap:8px; }
+  .acoes { display:flex; gap:6px; margin-top:8px; flex-wrap:wrap; }
+  .acoes button { font:inherit; font-size:.8rem; padding:6px 10px; border-radius:8px;
+                  border:1px solid var(--linha); background:var(--fundo); color:var(--texto); }
+  nav { position:fixed; left:0; right:0; bottom:0; z-index:6; display:grid; grid-template-columns:repeat(3,1fr);
+        background:var(--cartao); border-top:1px solid var(--linha); padding-bottom:env(safe-area-inset-bottom); }
+  nav button { font:inherit; font-size:.8rem; padding:10px 0 12px; border:0; background:none; color:var(--suave); }
+  nav button.ativo { color:var(--marca); font-weight:700; }
+  @media (prefers-color-scheme: dark) { nav button.ativo { color:var(--verde); } }
+  nav .ic { display:block; font-size:1.3rem; line-height:1.2; }
+  .contador { display:inline-block; min-width:18px; padding:0 5px; border-radius:9px; background:var(--vermelho);
+              color:#fff; font-size:.7rem; font-weight:700; margin-left:3px; }
+  .toast { position:fixed; left:50%; bottom:90px; transform:translateX(-50%); background:var(--texto); color:var(--fundo);
+           padding:10px 16px; border-radius:10px; font-size:.9rem; opacity:0; transition:opacity .2s; pointer-events:none; z-index:9; }
+  .toast.on { opacity:1; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Futebol e Boletins</h1>
+  <p id="sub">A carregar jogos…</p>
+</header>
+
+<main>
+  <!-- JOGOS -->
+  <section id="s-jogos" class="separador ativo">
+    <div class="dias" id="dias"></div>
+    <div id="lista"></div>
+  </section>
+
+  <!-- BOLETIM -->
+  <section id="s-boletim" class="separador">
+    <div id="boletim"></div>
+  </section>
+
+  <!-- BANCA -->
+  <section id="s-banca" class="separador">
+    <div id="banca"></div>
+  </section>
+</main>
+
+<nav>
+  <button data-sep="jogos" class="ativo"><span class="ic">⚽</span>Jogos</button>
+  <button data-sep="boletim"><span class="ic">🧾</span>Boletim<span id="n-sel"></span></button>
+  <button data-sep="banca"><span class="ic">💶</span>Banca</button>
+</nav>
+<div class="toast" id="toast"></div>
+
+<script>
+// ---------- armazenamento no telemóvel (protegido) ----------
+const guardar = (k, v) => { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} };
+const ler = (k, omissao) => { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : omissao; } catch (e) { return omissao; } };
+
+let selecao = ler('selecao_v1', {});      // id do jogo -> {id, data, casa, fora, liga, inicio, escolha, odd}
+let boletins = ler('boletins_v1', []);    // histórico
+let limite = ler('limite_v1', null);      // limite mensal (€)
+let valorBoletim = ler('valor_v1', '');
+let diaAtual = null, dados = null;
+const cacheDias = {};                     // data -> resposta /api/jogos
+
+const ESCOLHAS = ['1', 'X', '2', '1X', 'X2', '12'];
+const NOME_ESCOLHA = { '1': 'Vitória casa', 'X': 'Empate', '2': 'Vitória fora',
+                       '1X': 'Casa ou empate', 'X2': 'Empate ou fora', '12': 'Casa ou fora' };
+const ANULADOS = new Set(['PST', 'CANC', 'ABD']);
+
+const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const euros = n => (Number.isFinite(n) ? n : 0).toLocaleString('pt-PT', { style: 'currency', currency: 'EUR' });
+const num = s => { const n = parseFloat(String(s).replace(',', '.')); return Number.isFinite(n) ? n : NaN; };
+const horaLocal = iso => new Date(iso).toLocaleTimeString('pt-PT', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Lisbon' });
+const dataLisboa = (desloc = 0) => { const d = new Date(Date.now() + desloc * 864e5);
+  return d.toLocaleDateString('en-CA', { timeZone: 'Europe/Lisbon' }); };
+const mesDe = iso => iso.slice(0, 7);
+function toast(t) { const el = document.getElementById('toast'); el.textContent = t; el.classList.add('on'); setTimeout(() => el.classList.remove('on'), 1800); }
+
+// ---------- navegação ----------
+document.querySelectorAll('nav button').forEach(b => b.onclick = () => abrir(b.dataset.sep));
+function abrir(sep) {
+  document.querySelectorAll('nav button').forEach(b => b.classList.toggle('ativo', b.dataset.sep === sep));
+  document.querySelectorAll('.separador').forEach(s => s.classList.toggle('ativo', s.id === 's-' + sep));
+  if (sep === 'boletim') desenharBoletim();
+  if (sep === 'banca') { desenharBanca(); avaliarPendentes(); }
+  window.scrollTo(0, 0);
+}
+
+// ---------- jogos ----------
+const DIAS = [[-1, 'Ontem'], [0, 'Hoje'], [1, 'Amanhã']];
+function desenharDias() {
+  document.getElementById('dias').innerHTML = DIAS.map(([d, n]) =>
+    `<button class="chip ${dataLisboa(d) === diaAtual ? 'ativo' : ''}" data-d="${dataLisboa(d)}">${n}</button>`).join('');
+  document.querySelectorAll('#dias .chip').forEach(b => b.onclick = () => carregar(b.dataset.d));
+}
+
+async function obterDia(d, forcar = false) {
+  if (!forcar && cacheDias[d]) return cacheDias[d];
+  const r = await fetch('/api/jogos?data=' + d, { cache: 'no-store' });
+  if (!r.ok) throw new Error('HTTP ' + r.status);
+  return (cacheDias[d] = await r.json());
+}
+
+async function carregar(d) {
+  diaAtual = d; desenharDias();
+  try {
+    dados = await obterDia(d, true);
+    const at = dados.atualizado ? new Date(dados.atualizado).toLocaleTimeString('pt-PT', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Lisbon' }) : '—';
+    document.getElementById('sub').textContent = `Dados reais da API-Football · atualizado às ${at}`;
+  } catch (e) {
+    dados = null;
+    document.getElementById('sub').textContent = 'Sem ligação ao servidor. Tenta daqui a pouco.';
+  }
+  desenharJogos();
+}
+
+function desenharJogos() {
+  const lista = document.getElementById('lista');
+  if (!dados || !dados.jogos.length) {
+    lista.innerHTML = `<div class="vazio">Sem jogos guardados para este dia nas ligas acompanhadas.<br>
+      <small>A recolha só guarda o dia atual; dias anteriores podem não estar disponíveis.</small></div>`;
+    return;
+  }
+  const term = new Set(dados.terminados), vivo = new Set(dados.a_decorrer);
+  const ligas = {};
+  dados.jogos.forEach(j => (ligas[`${j.liga_nome} · ${j.pais}`] ??= []).push(j));
+  lista.innerHTML = Object.entries(ligas).map(([liga, js]) => `<h2 class="liga">${esc(liga)}</h2>` + js.map(j => {
+    const aoVivo = vivo.has(j.estado), acabou = term.has(j.estado);
+    const res = j.golos_casa == null ? '—' : `${j.golos_casa}–${j.golos_fora}`;
+    const estado = aoVivo ? `<span class="vivo">● Ao vivo${j.minuto ? ' ' + j.minuto + "'" : ''}</span>`
+                 : acabou ? esc(j.estado === 'FT' ? 'Terminado' : j.estado_longo)
+                 : horaLocal(j.inicio_utc);
+    const escolhido = selecao[j.id]?.escolha;
+    const botoes = ESCOLHAS.map(e => `<button data-id="${j.id}" data-e="${e}" class="${escolhido === e ? 'sel' : ''}"
+       ${acabou ? 'disabled' : ''} aria-label="${NOME_ESCOLHA[e]}">${e}</button>`).join('');
+    return `<div class="jogo"><div class="linha1"><div><div class="equipas">${esc(j.casa)} – ${esc(j.fora)}</div>
+      <div class="info">${estado}</div></div><div class="res">${res}</div></div>
+      <div class="escolhas">${botoes}</div></div>`;
+  }).join('')).join('');
+  lista.querySelectorAll('.escolhas button').forEach(b => b.onclick = () => escolher(+b.dataset.id, b.dataset.e));
+}
+
+function escolher(id, e) {
+  const j = dados.jogos.find(x => x.id === id);
+  if (selecao[id]?.escolha === e) { delete selecao[id]; toast('Retirado do boletim'); }
+  else {
+    selecao[id] = { id, data: j.data_local, casa: j.casa, fora: j.fora, liga: j.liga_nome,
+                    inicio: j.inicio_utc, escolha: e, odd: selecao[id]?.odd ?? '' };
+    toast(`${e} · ${j.casa} – ${j.fora}`);
+  }
+  guardar('selecao_v1', selecao); contarSelecoes(); desenharJogos();
+}
+
+function contarSelecoes() {
+  const n = Object.keys(selecao).length;
+  document.getElementById('n-sel').innerHTML = n ? `<span class="contador">${n}</span>` : '';
+}
+
+// ---------- boletim ----------
+function totaisBoletim() {
+  const sels = Object.values(selecao);
+  const odds = sels.map(s => num(s.odd));
+  const completo = sels.length > 0 && odds.every(o => o >= 1.01);
+  const oddTotal = completo ? odds.reduce((a, b) => a * b, 1) : NaN;
+  const valor = num(valorBoletim);
+  return { sels, completo, oddTotal, valor, retorno: completo && valor > 0 ? valor * oddTotal : NaN };
+}
+
+function gastoDoMes() {
+  const mes = mesDe(dataLisboa());
+  return boletins.filter(b => mesDe(b.criado) === mes).reduce((s, b) => s + b.valor, 0);
+}
+
+function desenharBoletim() {
+  const el = document.getElementById('boletim');
+  const sels = Object.values(selecao).sort((a, b) => a.inicio.localeCompare(b.inicio));
+  if (!sels.length) {
+    el.innerHTML = `<div class="vazio">O boletim está vazio.<br>No separador <b>Jogos</b>, toca em 1, X ou 2 para juntar escolhas.</div>`;
+    return;
+  }
+  el.innerHTML = `<div class="cartao">${sels.map(s => `<div class="sel-linha">
+      <div class="sel-nome"><b>${esc(s.casa)} – ${esc(s.fora)}</b>${s.escolha} · ${NOME_ESCOLHA[s.escolha]} · ${horaLocal(s.inicio)}</div>
+      <input class="num" inputmode="decimal" placeholder="odd" value="${esc(s.odd)}" data-odd="${s.id}" aria-label="Odd">
+      <button class="x" data-tirar="${s.id}" aria-label="Retirar">✕</button></div>`).join('')}</div>
+    <div class="cartao">
+      <label class="campo" for="valor">Valor a apostar (€)</label>
+      <input class="num" id="valor" inputmode="decimal" placeholder="ex.: 2,00" value="${esc(valorBoletim)}">
+      <div class="totais" style="margin-top:10px">
+        <div class="total"><span>Odd total</span><strong id="t-odd">—</strong></div>
+        <div class="total"><span>Retorno possível</span><strong id="t-ret">—</strong></div>
+      </div>
+      <div id="aviso-limite"></div>
+      <button class="botao" id="guardar">Guardar boletim</button>
+      <button class="botao sec" id="copiar">Copiar escolhas</button>
+      <button class="botao sec" id="limpar">Limpar boletim</button>
+      <p class="nota">Introduz as odds tal como aparecem no Placard. A app não adivinha odds.
+        Faz a aposta no Placard e depois carrega em «Guardar boletim» para a acompanhar aqui.</p>
+    </div>`;
+  el.querySelectorAll('[data-odd]').forEach(i => i.oninput = () => {
+    selecao[i.dataset.odd].odd = i.value; guardar('selecao_v1', selecao); atualizarTotais(); });
+  el.querySelectorAll('[data-tirar]').forEach(b => b.onclick = () => {
+    delete selecao[b.dataset.tirar]; guardar('selecao_v1', selecao); contarSelecoes(); desenharBoletim(); });
+  document.getElementById('valor').oninput = e => { valorBoletim = e.target.value; guardar('valor_v1', valorBoletim); atualizarTotais(); };
+  document.getElementById('guardar').onclick = guardarBoletim;
+  document.getElementById('copiar').onclick = copiarBoletim;
+  document.getElementById('limpar').onclick = () => { if (confirm('Limpar todas as escolhas?')) {
+    selecao = {}; guardar('selecao_v1', selecao); contarSelecoes(); desenharBoletim(); } };
+  atualizarTotais();
+}
+
+function atualizarTotais() {
+  const t = totaisBoletim();
+  document.getElementById('t-odd').textContent = t.completo ? t.oddTotal.toFixed(2).replace('.', ',') : '—';
+  document.getElementById('t-ret').textContent = Number.isFinite(t.retorno) ? euros(t.retorno) : '—';
+  const av = document.getElementById('aviso-limite');
+  if (limite && t.valor > 0 && gastoDoMes() + t.valor > limite) {
+    av.innerHTML = `<div class="cartao aviso" style="margin-top:10px">Com este boletim passas o teu limite mensal
+      de ${euros(limite)} (já gastaste ${euros(gastoDoMes())} este mês).</div>`;
+  } else av.innerHTML = '';
+}
+
+function guardarBoletim() {
+  const t = totaisBoletim();
+  if (!t.completo) return toast('Falta a odd de alguma escolha');
+  if (!(t.valor > 0)) return toast('Indica o valor apostado');
+  if (limite && gastoDoMes() + t.valor > limite &&
+      !confirm(`Este boletim ultrapassa o teu limite mensal de ${euros(limite)}. Guardar mesmo assim?`)) return;
+  boletins.unshift({ id: Date.now(), criado: dataLisboa(), valor: t.valor, oddTotal: t.oddTotal,
+    selecoes: t.sels.map(s => ({ ...s, odd: num(s.odd), resultado: null })), estado: 'pendente', retorno: 0 });
+  guardar('boletins_v1', boletins);
+  selecao = {}; valorBoletim = ''; guardar('selecao_v1', selecao); guardar('valor_v1', '');
+  contarSelecoes(); toast('Boletim guardado'); abrir('banca');
+}
+
+async function copiarBoletim() {
+  const t = totaisBoletim();
+  const txt = t.sels.map(s => `${s.casa} – ${s.fora}: ${s.escolha}${s.odd ? ' @ ' + s.odd : ''}`).join('\n')
+    + (t.completo ? `\nOdd total: ${t.oddTotal.toFixed(2)}` : '') + (t.valor > 0 ? `\nValor: ${euros(t.valor)}` : '');
+  try { await navigator.clipboard.writeText(txt); toast('Escolhas copiadas'); } catch (e) { toast('Não foi possível copiar'); }
+}
+
+// ---------- banca e verificação de resultados ----------
+function avaliarSelecao(s, j, term) {
+  if (!j || !term.has(j.estado)) return null;
+  if (ANULADOS.has(j.estado)) return 'anulada';
+  const c = j.golos_90_casa ?? j.golos_casa, f = j.golos_90_fora ?? j.golos_fora;
+  if (c == null || f == null) return null;
+  const r = c > f ? '1' : c < f ? '2' : 'X';
+  return s.escolha.includes(r) ? 'certa' : 'errada';
+}
+
+function fecharBoletim(b) {
+  if (b.manual) return;
+  if (b.selecoes.some(s => s.resultado === 'errada')) { b.estado = 'perdido'; b.retorno = 0; return; }
+  if (b.selecoes.every(s => s.resultado)) {
+    const odd = b.selecoes.reduce((p, s) => p * (s.resultado === 'anulada' ? 1 : s.odd), 1);
+    b.estado = 'ganho'; b.retorno = b.valor * odd;
+  }
+}
+
+async function avaliarPendentes() {
+  const pend = boletins.filter(b => b.estado === 'pendente');
+  const datas = [...new Set(pend.flatMap(b => b.selecoes.map(s => s.data)))];
+  let mudou = false;
+  for (const d of datas) {
+    let r; try { r = await obterDia(d, true); } catch (e) { continue; }
+    const term = new Set(r.terminados);
+    for (const b of pend) for (const s of b.selecoes) if (s.data === d && !s.resultado) {
+      const res = avaliarSelecao(s, r.jogos.find(j => j.id === s.id), term);
+      if (res) { s.resultado = res; mudou = true; }
+    }
+  }
+  pend.forEach(fecharBoletim);
+  if (mudou || pend.some(b => b.estado !== 'pendente')) { guardar('boletins_v1', boletins); desenharBanca(); }
+}
+
+function desenharBanca() {
+  const el = document.getElementById('banca');
+  const mes = mesDe(dataLisboa());
+  const doMes = boletins.filter(b => mesDe(b.criado) === mes);
+  const soma = (l, f) => l.reduce((s, b) => s + f(b), 0);
+  const apostadoMes = soma(doMes, b => b.valor), ganhoMes = soma(doMes, b => b.estado === 'ganho' ? b.retorno : 0);
+  const apostadoTot = soma(boletins, b => b.valor), ganhoTot = soma(boletins, b => b.estado === 'ganho' ? b.retorno : 0);
+  const pendentes = soma(boletins, b => b.estado === 'pendente' ? b.valor : 0);
+  const saldoMes = soma(doMes.filter(b => b.estado !== 'pendente'), b => (b.estado === 'ganho' ? b.retorno : 0) - b.valor);
+  const nomeMes = new Date().toLocaleDateString('pt-PT', { month: 'long', timeZone: 'Europe/Lisbon' });
+  const icone = { certa: '✅', errada: '❌', anulada: '⚪' };
+  el.innerHTML = `
+    <div class="cartao">
+      <div style="font-weight:700;margin-bottom:8px">Este mês (${nomeMes})</div>
+      <div class="totais">
+        <div class="total"><span>Apostado</span><strong>${euros(apostadoMes)}</strong></div>
+        <div class="total"><span>Recebido</span><strong>${euros(ganhoMes)}</strong></div>
+      </div>
+      <div class="total" style="margin-top:8px"><span>Saldo do mês (boletins já decididos)</span>
+        <strong style="color:var(${saldoMes >= 0 ? '--verde' : '--vermelho'})">${euros(saldoMes)}</strong></div>
+      ${limite ? `<p class="nota">Limite mensal: ${euros(limite)} · usado ${Math.min(100, Math.round(apostadoMes / limite * 100))}%</p>` : ''}
+      <p class="nota">Desde o início: apostado ${euros(apostadoTot)}, recebido ${euros(ganhoTot)}
+        ${pendentes ? ` · ${euros(pendentes)} em boletins por decidir` : ''}.</p>
+    </div>
+    <div class="cartao">
+      <label class="campo" for="limite" style="margin-top:0">Limite mensal (€)</label>
+      <input class="num" id="limite" inputmode="decimal" placeholder="ex.: 50" value="${limite ?? ''}">
+      <p class="nota">A app avisa-te antes de passares este valor. Joga só o que podes perder.</p>
+    </div>
+    <h2 class="liga">Boletins</h2>
+    ${boletins.length ? boletins.map(b => `<div class="cartao">
+      <div class="linha1"><div><b>${euros(b.valor)}</b> · odd ${b.oddTotal.toFixed(2).replace('.', ',')}
+        <div class="info">${new Date(b.criado + 'T12:00').toLocaleDateString('pt-PT')}</div></div>
+        <span class="estado-bol ${b.estado}">${b.estado === 'ganho' ? 'Ganho ' + euros(b.retorno) : b.estado === 'perdido' ? 'Perdido' : 'Pendente'}</span></div>
+      ${b.selecoes.map(s => `<div class="bol-sel"><span>${s.resultado ? icone[s.resultado] : '⏳'} ${esc(s.casa)} – ${esc(s.fora)}</span>
+        <span>${s.escolha} @ ${Number(s.odd).toFixed(2).replace('.', ',')}</span></div>`).join('')}
+      <div class="acoes">
+        ${b.estado === 'pendente' ? `<button data-marcar="ganho" data-b="${b.id}">Marcar ganho</button>
+          <button data-marcar="perdido" data-b="${b.id}">Marcar perdido</button>` : ''}
+        <button data-apagar="${b.id}">Apagar</button>
+      </div></div>`).join('')
+      : '<div class="vazio">Ainda não guardaste boletins.</div>'}
+    <p class="nota">Os boletins são verificados com os resultados reais aos 90 minutos. Jogos adiados ou cancelados
+      contam como anulados (odd 1), como é habitual; confirma sempre no Placard.
+      Os boletins ficam guardados só neste telemóvel. <a href="/estado" style="color:inherit">Estado da recolha</a></p>`;
+  document.getElementById('limite').onchange = e => { const v = num(e.target.value);
+    limite = v > 0 ? v : null; guardar('limite_v1', limite); desenharBanca(); };
+  el.querySelectorAll('[data-marcar]').forEach(x => x.onclick = () => {
+    const b = boletins.find(y => y.id === +x.dataset.b);
+    b.manual = true; b.estado = x.dataset.marcar; b.retorno = b.estado === 'ganho' ? b.valor * b.oddTotal : 0;
+    guardar('boletins_v1', boletins); desenharBanca(); });
+  el.querySelectorAll('[data-apagar]').forEach(x => x.onclick = () => { if (confirm('Apagar este boletim do histórico?')) {
+    boletins = boletins.filter(y => y.id !== +x.dataset.apagar); guardar('boletins_v1', boletins); desenharBanca(); } });
+}
+
+// ---------- arranque ----------
+contarSelecoes();
+carregar(dataLisboa());
+setInterval(() => { if (document.visibilityState === 'visible' && diaAtual === dataLisboa()) carregar(diaAtual); }, 120000);
+document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') carregar(diaAtual || dataLisboa()); });
+</script>
+</body>
+</html>
