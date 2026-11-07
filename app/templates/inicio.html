@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="pt-PT">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="refresh" content="300">
+<title>Análise de Futebol</title>
+<style>
+  :root { --fundo:#f6f7f5; --cartao:#fff; --texto:#1c2321; --suave:#5d6b66; --linha:#dfe4e1;
+          --verde:#1f7a4d; --ambar:#a8650a; --vermelho:#b3261e; }
+  @media (prefers-color-scheme: dark) {
+    :root { --fundo:#121614; --cartao:#1b201e; --texto:#e8ecea; --suave:#9aa8a2; --linha:#2c3431;
+            --verde:#4cc38a; --ambar:#e0a040; --vermelho:#f28b82; } }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--fundo); color:var(--texto);
+         font:15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width:760px; margin:0 auto; padding:16px; }
+  h1 { font-size:1.35rem; margin:0 0 4px; }
+  .sub { color:var(--suave); margin:0 0 16px; font-size:.9rem; }
+  .cartao { background:var(--cartao); border:1px solid var(--linha); border-radius:10px;
+            padding:12px 14px; margin-bottom:14px; }
+  .aviso { border-left:4px solid var(--ambar); }
+  .erro { border-left:4px solid var(--vermelho); }
+  h2 { font-size:1rem; margin:0 0 8px; }
+  .jogo { display:grid; grid-template-columns:52px 1fr auto; gap:8px; align-items:center;
+          padding:7px 0; border-top:1px solid var(--linha); }
+  .jogo:first-of-type { border-top:0; }
+  .hora { color:var(--suave); font-variant-numeric:tabular-nums; }
+  .res { font-weight:700; font-variant-numeric:tabular-nums; text-align:right; }
+  .vivo { color:var(--verde); font-size:.8rem; font-weight:600; }
+  .fim { color:var(--suave); font-size:.8rem; }
+  .quota { display:flex; flex-wrap:wrap; gap:6px 18px; font-size:.9rem; }
+  .barra { height:6px; background:var(--linha); border-radius:3px; overflow:hidden; margin-top:8px; }
+  .barra span { display:block; height:100%; background:var(--verde); }
+  table { width:100%; border-collapse:collapse; font-size:.8rem; }
+  td, th { text-align:left; padding:4px 6px 4px 0; border-top:1px solid var(--linha); }
+  form { display:flex; gap:8px; margin-bottom:14px; }
+  input, button { font:inherit; padding:6px 10px; border-radius:6px; border:1px solid var(--linha);
+                  background:var(--cartao); color:var(--texto); }
+  footer { color:var(--suave); font-size:.8rem; margin-top:20px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Jogos de {{ dia }}</h1>
+  <p class="sub">Dados reais da API-Football. Sem previsões nem valores estimados.</p>
+
+  {% if not estado.chave_configurada %}
+  <div class="cartao erro"><strong>Recolha parada:</strong> falta a variável
+    <code>API_FOOTBALL_KEY</code> no painel do alojamento.</div>
+  {% endif %}
+  {% if not estado.persistente %}
+  <div class="cartao aviso">Base de dados local (SQLite): os dados perdem-se quando o serviço
+    reinicia ou adormece. Para guardar histórico, ligar uma base Postgres (<code>DATABASE_URL</code>).</div>
+  {% endif %}
+  {% if estado.ultimo_erro %}
+  <div class="cartao erro"><strong>Último erro da API</strong> ({{ estado.ultimo_erro.quando|hora }}):
+    {{ estado.ultimo_erro.erro }}</div>
+  {% endif %}
+
+  <form method="get"><input type="date" name="data" value="{{ dia }}"><button>Ver dia</button></form>
+
+  {% for liga, jogos in ligas.items() %}
+  <div class="cartao">
+    <h2>{{ liga }}</h2>
+    {% for j in jogos %}
+    <div class="jogo">
+      <span class="hora">{{ j.inicio_utc|so_hora }}</span>
+      <span>{{ j.casa }} – {{ j.fora }}<br>
+        {% if j.estado in a_decorrer %}<span class="vivo">● {{ j.estado_longo }}{% if j.minuto %} · {{ j.minuto }}'{% endif %}</span>
+        {% elif j.estado in terminados %}<span class="fim">{{ j.estado_longo }}</span>
+        {% else %}<span class="fim">{{ j.estado_longo or j.estado }}</span>{% endif %}
+        <span class="fim"> · atualizado {{ j.atualizado_utc|hora }}</span></span>
+      <span class="res">{% if j.golos_casa is not none %}{{ j.golos_casa }}–{{ j.golos_fora }}{% else %}—{% endif %}</span>
+    </div>
+    {% endfor %}
+  </div>
+  {% else %}
+  <div class="cartao">Sem jogos guardados para este dia nas ligas acompanhadas.
+    {% if not estado.data_calendario %}O calendário ainda não foi recolhido.{% endif %}</div>
+  {% endfor %}
+
+  <div class="cartao">
+    <h2>Quota da API (reinicia às 00:00 UTC)</h2>
+    <div class="quota">
+      <span>Pedidos hoje: <strong>{{ estado.pedidos_hoje }}</strong> / {{ estado.limite }}</span>
+      <span>Restantes (API): <strong>{{ estado.restantes_api if estado.restantes_api is not none else '—' }}</strong></span>
+      <span>Disponíveis para recolha: <strong>{{ estado.disponiveis }}</strong></span>
+    </div>
+    <div class="barra"><span style="width:{{ [100, (estado.pedidos_hoje * 100 // estado.limite)]|min }}%"></span></div>
+    <p class="sub" style="margin:8px 0 0">{{ estado.ultima_decisao or 'A aguardar o primeiro ciclo.' }}<br>
+      Calendário: {{ estado.ultimo_calendario|hora }} · Direto: {{ estado.ultimo_direto|hora }}</p>
+  </div>
+
+  {% if pedidos %}
+  <div class="cartao">
+    <h2>Últimos pedidos</h2>
+    <table><tr><th>Hora</th><th>HTTP</th><th>Restantes</th><th>Erro</th></tr>
+    {% for p in pedidos %}<tr><td>{{ p.quando_utc|hora }}</td><td>{{ p.http or '—' }}</td>
+      <td>{{ p.restantes if p.restantes is not none else '—' }}</td><td>{{ p.erro or '' }}</td></tr>{% endfor %}
+    </table>
+  </div>
+  {% endif %}
+
+  <footer>Página atualiza a cada 5 minutos. Dados JSON em <code>/api/jogos</code>.</footer>
+</main>
+</body>
+</html>
