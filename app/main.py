@@ -1,0 +1,107 @@
+"""Aplicação web: mostra os jogos recolhidos e o estado da recolha."""
+import asyncio
+import logging
+from contextlib import asynccontextmanager
+from datetime import datetime
+from pathlib import Path
+from zoneinfo import ZoneInfo
+
+import httpx
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import HTMLResponse
+from fastapi.templating import Jinja2Templates
+
+from . import config, db, recolha
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+modelos = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
+trinco = asyncio.Lock()  # impede duas recolhas em simultâneo
+
+
+async def ciclo_protegido():
+    async with httpx.AsyncClient() as cliente:
+        while True:
+            try:
+                async with trinco:
+                    logging.getLogger("recolha").info(await recolha.passo(cliente))
+            except Exception:
+                logging.getLogger("recolha").exception("Erro no ciclo de recolha")
+            await asyncio.sleep(60)
+
+
+@asynccontextmanager
+async def vida(app: FastAPI):
+    db.iniciar()
+    tarefa = asyncio.create_task(ciclo_protegido()) if config.RECOLHA_AUTOMATICA else None
+    yield
+    if tarefa:
+        tarefa.cancel()
+
+
+app = FastAPI(title="Análise de Futebol", lifespan=vida)
+
+
+def hora_local(iso: str | None) -> str:
+    if not iso:
+        return "—"
+    return datetime.fromisoformat(iso).astimezone(ZoneInfo(config.FUSO)).strftime("%d/%m %H:%M")
+
+
+modelos.env.filters["hora"] = hora_local
+modelos.env.filters["so_hora"] = lambda iso: hora_local(iso)[-5:] if iso else "—"
+
+
+def resumo_estado() -> dict:
+    estado = recolha.estado_atual()
+    feitos = db.pedidos_hoje_utc()
+    return {
+        **estado,
+        "chave_configurada": bool(config.API_KEY),
+        "pedidos_hoje": feitos,
+        "limite": config.LIMITE_DIARIO,
+        "disponiveis": recolha.pedidos_disponiveis(estado["restantes_api"], feitos),
+        "ultima_decisao": db.ler_estado("ultima_decisao"),
+        "persistente": not config.DATABASE_URL.startswith("sqlite"),
+    }
+
+
+@app.get("/", response_class=HTMLResponse)
+def inicio(request: Request, data: str | None = None):
+    dia = data or recolha.data_local(db.agora_utc())
+    jogos = db.jogos_do_dia(dia)
+    ligas: dict[str, list] = {}
+    for j in jogos:
+        ligas.setdefault(f"{j['liga_nome']} ({j['pais']})", []).append(j)
+    return modelos.TemplateResponse(request, "inicio.html", {
+        "dia": dia, "ligas": ligas, "estado": resumo_estado(),
+        "pedidos": db.ultimos_pedidos(10),
+        "terminados": recolha.TERMINADOS, "a_decorrer": recolha.A_DECORRER,
+    })
+
+
+@app.get("/api/jogos")
+def api_jogos(data: str | None = None):
+    dia = data or recolha.data_local(db.agora_utc())
+    jogos = [{k: v for k, v in j.items() if k != "bruto"} for j in db.jogos_do_dia(dia)]
+    return {"data": dia, "fonte": "API-Football", "jogos": jogos}
+
+
+@app.get("/api/estado")
+def api_estado():
+    return resumo_estado()
+
+
+@app.api_route("/api/recolher", methods=["GET", "POST"])
+async def api_recolher(token: str = ""):
+    """Dispara um passo de recolha. Para agendadores externos (mantêm o serviço acordado)."""
+    if not config.TOKEN_RECOLHA or token != config.TOKEN_RECOLHA:
+        raise HTTPException(status_code=403, detail="Token inválido.")
+    if trinco.locked():
+        return {"resultado": "Recolha já em curso."}
+    async with trinco, httpx.AsyncClient() as cliente:
+        return {"resultado": await recolha.passo(cliente)}
+
+
+@app.get("/saude")
+def saude():
+    return {"ok": True}
