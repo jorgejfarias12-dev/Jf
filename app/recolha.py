@@ -27,6 +27,7 @@ A_DECORRER = {"1H", "HT", "2H", "ET", "BT", "P", "SUSP", "INT", "LIVE"}
 JANELA_ANTES = timedelta(minutes=5)
 JANELA_DEPOIS = timedelta(minutes=150)  # 90' + intervalo + descontos + eventual prolongamento
 MAX_IDS = 20
+erro_ultimo_pedido: str | None = None  # erro devolvido pelo pedido mais recente (ou None)
 
 
 def data_local(agora: datetime) -> str:
@@ -58,8 +59,7 @@ def intervalo_direto(ativos: list[dict], agora: datetime, disponiveis: int) -> f
     reinicio_quota = (agora + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
     fim = min(fim, reinicio_quota)
     segundos = max(60.0, (fim - agora).total_seconds())
-    pedidos_por_consulta = -(-len(ativos) // MAX_IDS)
-    consultas_possiveis = max(1, (disponiveis - 1) // pedidos_por_consulta)  # guarda 1 para o fecho
+    consultas_possiveis = max(1, disponiveis - 1)  # 1 pedido por consulta; guarda 1 para o fecho
     return max(float(config.INTERVALO_MIN_DIRETO), segundos / consultas_possiveis)
 
 
@@ -109,7 +109,7 @@ def decidir(agora: datetime, jogos_hoje: list[dict], estado: dict, disponiveis: 
             return "direto", [j["id"] for j in ativos]
         espera_msg = f"Jogos a decorrer; próxima consulta dentro de {int(espera // 60)} min."
 
-    if disponiveis > config.LIMIAR_CLASSIFICACOES:
+    if disponiveis > config.LIMIAR_CLASSIFICACOES and estado.get("classificacoes_bloqueadas") != hoje:
         pendente = classificacao_pendente(jogos_hoje + (jogos_amanha or []), estado, hoje)
         if pendente:
             return "classificacao", pendente
@@ -123,11 +123,13 @@ def decidir(agora: datetime, jogos_hoje: list[dict], estado: dict, disponiveis: 
 
 async def pedir(cliente: httpx.AsyncClient, endpoint: str, params: dict) -> list[dict] | None:
     """Faz um pedido à API, regista-o e devolve 'response' (ou None se houver erro)."""
+    global erro_ultimo_pedido
     try:
         r = await cliente.get(f"{config.API_BASE}{endpoint}", params=params,
                               headers={"x-apisports-key": config.API_KEY}, timeout=30)
     except httpx.HTTPError as e:
-        db.registar_pedido(endpoint, None, None, f"Falha de ligação: {e}")
+        erro_ultimo_pedido = f"Falha de ligação: {e}"
+        db.registar_pedido(endpoint, None, None, erro_ultimo_pedido)
         return None
 
     restantes = r.headers.get("x-ratelimit-requests-remaining")
@@ -150,6 +152,7 @@ async def pedir(cliente: httpx.AsyncClient, endpoint: str, params: dict) -> list
         erro = f"HTTP {r.status_code}"
 
     db.registar_pedido(endpoint, r.status_code, restantes, erro)
+    erro_ultimo_pedido = erro
     if erro:
         db.guardar_estado("ultimo_erro", {"quando": db.agora_utc().isoformat(), "erro": erro})
         log.warning("Erro da API em %s: %s", endpoint, erro)
@@ -177,17 +180,20 @@ async def executar(acao: str, ids: list[int] | None, cliente: httpx.AsyncClient)
         db.guardar_estado("data_calendario", hoje)
         db.guardar_estado("ultimo_calendario", agora.isoformat())
     elif acao == "direto":
-        for i in range(0, len(ids), MAX_IDS):
-            lote = ids[i:i + MAX_IDS]
-            dados = await pedir(cliente, "/fixtures",
-                                {"ids": "-".join(map(str, lote)), "timezone": config.FUSO})
-            for f in dados or []:
+        # O plano gratuito não aceita ?ids=...; o calendário do dia traz o estado e o
+        # resultado atual de todos os jogos (incluindo os que acabaram), num só pedido.
+        dados = await pedir(cliente, "/fixtures", {"date": data_local(agora), "timezone": config.FUSO})
+        for f in dados or []:
+            if f["league"]["id"] in config.LIGAS:
                 db.guardar_jogo(f)
-                gravados += 1
+                gravados += 1 if f["fixture"]["id"] in ids else 0
         db.guardar_estado("ultimo_direto", agora.isoformat())
     elif acao == "classificacao":
         liga, epoca = ids
         dados = await pedir(cliente, "/standings", {"league": liga, "season": epoca})
+        if dados is None and "do not have access" in (erro_ultimo_pedido or ""):
+            # O plano não inclui classificações desta época: não insistir hoje (poupa quota)
+            db.guardar_estado("classificacoes_bloqueadas", data_local(agora))
         for item in dados or []:
             for grupo in item["league"].get("standings", []):
                 for linha in grupo:
@@ -204,7 +210,7 @@ async def executar(acao: str, ids: list[int] | None, cliente: httpx.AsyncClient)
 def estado_atual() -> dict:
     return {k: db.ler_estado(k) for k in
             ("data_calendario", "ultimo_calendario", "ultimo_direto", "restantes_api",
-             "ultimo_erro", "classificacoes")}
+             "ultimo_erro", "classificacoes", "classificacoes_bloqueadas")}
 
 
 MENSAGENS = {
