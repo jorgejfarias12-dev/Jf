@@ -136,6 +136,7 @@ def api_jogos(data: str | None = None):
     return {"data": dia, "fonte": "API-Football",
             "atualizado": db.ler_estado("ultimo_direto") or db.ler_estado("ultimo_calendario"),
             "terminados": sorted(recolha.TERMINADOS), "a_decorrer": sorted(recolha.A_DECORRER),
+            "classificacoes_indisponiveis": db.ler_estado("classificacoes_bloqueadas") is not None,
             "jogos": jogos}
 
 
