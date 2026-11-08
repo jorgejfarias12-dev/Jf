@@ -1,19 +1,23 @@
-"""Recolha de dados reais da API-Football, com gestão da quota diária.
+"""Recolha de dados reais da football-data.org (plano gratuito, API v4).
 
-Estratégia (pensada para o plano gratuito de 100 pedidos/dia):
-  1. Calendário do dia: 1 pedido a /fixtures?date=... devolve todos os jogos
-     do dia; guardam-se só os das ligas configuradas.
-  2. Jogos a decorrer: 1 pedido a /fixtures?ids=... (até 20 jogos por pedido)
-     devolve o estado e o resultado desses jogos, incluindo os que acabaram
-     de terminar (ao contrário de ?live=all, onde desaparecem).
-  3. O intervalo entre consultas em direto é calculado a partir dos pedidos
-     que restam e do tempo de jogo que falta, nunca abaixo de INTERVALO_MIN_DIRETO.
-  4. Sem jogos a decorrer, só se atualiza o calendário de 6 em 6 horas.
-  5. Abaixo da reserva, a recolha automática pára até a quota reiniciar.
+Limites do plano gratuito: 10 pedidos por minuto, sem limite diário; resultados
+com atraso (não são em tempo real). A recolha faz no máximo 1 pedido por minuto.
+
+Estratégia:
+  1. Calendário: 1 pedido a /matches?dateFrom=hoje&dateTo=depois de amanhã traz
+     os jogos de hoje e de amanhã de todas as competições do plano; guardam-se só
+     as competições configuradas.
+  2. Jogos a decorrer: o mesmo pedido, de INTERVALO_DIRETO em INTERVALO_DIRETO
+     segundos, atualiza estado e resultado (incluindo os jogos que acabaram).
+  3. Classificações: 1 pedido por competição com jogos, uma vez por dia, só
+     quando não há atualização de direto pendente.
+  4. Erros: a recolha espera 15 minutos antes de tentar de novo (1 minuto se o
+     erro for de limite por minuto), para nunca entrar em ciclo.
+Nada é estimado: os valores gravados são os que a fonte devolve.
 """
 import json
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import httpx
@@ -22,18 +26,96 @@ from . import config, db
 
 log = logging.getLogger("recolha")
 
-TERMINADOS = {"FT", "AET", "PEN", "PST", "CANC", "ABD", "AWD", "WO"}
-A_DECORRER = {"1H", "HT", "2H", "ET", "BT", "P", "SUSP", "INT", "LIVE"}
+# Estados normalizados (códigos curtos usados pela página)
+ESTADOS = {
+    "SCHEDULED": ("NS", "Por começar"), "TIMED": ("NS", "Por começar"),
+    "IN_PLAY": ("LIVE", "A decorrer"), "PAUSED": ("HT", "Intervalo"),
+    "FINISHED": ("FT", "Terminado"), "POSTPONED": ("PST", "Adiado"),
+    "SUSPENDED": ("SUSP", "Suspenso"), "CANCELLED": ("CANC", "Cancelado"),
+    "AWARDED": ("AWD", "Atribuído"),
+}
+TERMINADOS = {"FT", "AET", "PEN", "PST", "CANC", "AWD"}
+A_DECORRER = {"LIVE", "HT", "SUSP"}
 JANELA_ANTES = timedelta(minutes=5)
 JANELA_DEPOIS = timedelta(minutes=150)  # 90' + intervalo + descontos + eventual prolongamento
-MAX_IDS = 20
-erro_ultimo_pedido: str | None = None  # erro devolvido pelo pedido mais recente (ou None)
+ESPERA_ERRO = timedelta(minutes=15)
+ESPERA_LIMITE = timedelta(minutes=1)
 
 
 def data_local(agora: datetime) -> str:
     return agora.astimezone(ZoneInfo(config.FUSO)).date().isoformat()
 
 
+# ---------- normalização (só muda a forma, nunca os valores) ----------
+def _soma(*vals):
+    vals = [v for v in vals if v is not None]
+    return sum(vals) if vals else None
+
+
+def normalizar_jogo(m: dict) -> dict:
+    comp, area = m.get("competition") or {}, m.get("area") or {}
+    score = m.get("score") or {}
+    ft = score.get("fullTime") or {}
+    rt = score.get("regularTime") or {}   # só existe quando houve prolongamento
+    et = score.get("extraTime") or {}
+    curto, longo = ESTADOS.get(m.get("status"), (m.get("status"), m.get("status")))
+    if curto == "FT" and score.get("duration") == "EXTRA_TIME":
+        curto, longo = "AET", "Terminado após prolongamento"
+    elif curto == "FT" and score.get("duration") == "PENALTY_SHOOTOUT":
+        curto, longo = "PEN", "Terminado após penáltis"
+    if rt:
+        golos = (_soma(rt.get("home"), et.get("home")), _soma(rt.get("away"), et.get("away")))
+        golos_90 = (rt.get("home"), rt.get("away"))
+    else:
+        golos = golos_90 = (ft.get("home"), ft.get("away"))
+    inicio = datetime.fromisoformat(m["utcDate"].replace("Z", "+00:00"))
+    casa, fora = m.get("homeTeam") or {}, m.get("awayTeam") or {}
+    return {
+        "id": m["id"], "data_local": data_local(inicio), "inicio_utc": inicio.isoformat(),
+        "liga_id": comp.get("id"), "liga_codigo": comp.get("code"), "liga_nome": comp.get("name"),
+        "pais": area.get("name"), "epoca": (m.get("season") or {}).get("id"),
+        "casa_id": casa.get("id"), "casa": casa.get("shortName") or casa.get("name"),
+        "fora_id": fora.get("id"), "fora": fora.get("shortName") or fora.get("name"),
+        "golos_casa": golos[0], "golos_fora": golos[1],
+        "golos_90_casa": golos_90[0], "golos_90_fora": golos_90[1],
+        "estado": curto, "estado_longo": longo, "minuto": m.get("minute"),
+        "bruto": json.dumps(m),
+    }
+
+
+def normalizar_classificacao(resp: dict) -> list[tuple[int, dict]]:
+    """Junta as tabelas TOTAL, HOME e AWAY numa linha por equipa: [(equipa_id, dados)]."""
+    def bloco(lin):
+        if not lin:
+            return None
+        return {"played": lin.get("playedGames"), "win": lin.get("won"), "draw": lin.get("draw"),
+                "lose": lin.get("lost"),
+                "goals": {"for": lin.get("goalsFor"), "against": lin.get("goalsAgainst")}}
+
+    por_tipo: dict[str, dict[int, dict]] = {}
+    grupo_de: dict[int, str | None] = {}
+    for s in resp.get("standings") or []:
+        tipo = s.get("type") or "TOTAL"
+        for lin in s.get("table") or []:
+            tid = (lin.get("team") or {}).get("id")
+            if tid is None:
+                continue
+            por_tipo.setdefault(tipo, {})[tid] = lin
+            if tipo == "TOTAL":
+                grupo_de[tid] = s.get("group")
+    linhas = []
+    for tid, t in por_tipo.get("TOTAL", {}).items():
+        forma = (t.get("form") or "").replace(",", "").replace(" ", "")
+        linhas.append((tid, {
+            "rank": t.get("position"), "points": t.get("points"), "group": grupo_de.get(tid),
+            "form": forma or None, "all": bloco(t),
+            "home": bloco(por_tipo.get("HOME", {}).get(tid)),
+            "away": bloco(por_tipo.get("AWAY", {}).get(tid)),
+        }))
+    return linhas
+
+
+# ---------- decisão ----------
 def jogos_ativos(jogos: list[dict], agora: datetime) -> list[dict]:
     """Jogos que estão (ou podem estar) a decorrer agora."""
     ativos = []
@@ -46,191 +128,151 @@ def jogos_ativos(jogos: list[dict], agora: datetime) -> list[dict]:
     return ativos
 
 
-def pedidos_disponiveis(restantes_api: int | None, feitos_hoje: int) -> int:
-    """Pedidos que a recolha automática ainda pode gastar hoje."""
-    pelo_registo = config.LIMITE_DIARIO - feitos_hoje
-    base = pelo_registo if restantes_api is None else min(restantes_api, pelo_registo)
-    return max(0, base - config.RESERVA)
+def _passou(desde: str | None, agora: datetime, segundos: float) -> bool:
+    return desde is None or (agora - datetime.fromisoformat(desde)).total_seconds() >= segundos
 
 
-def intervalo_direto(ativos: list[dict], agora: datetime, disponiveis: int) -> float:
-    """Segundos entre consultas em direto, repartindo os pedidos pelo tempo de jogo que falta."""
-    fim = max(datetime.fromisoformat(j["inicio_utc"]) + JANELA_DEPOIS for j in ativos)
-    reinicio_quota = (agora + timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0)
-    fim = min(fim, reinicio_quota)
-    segundos = max(60.0, (fim - agora).total_seconds())
-    consultas_possiveis = max(1, disponiveis - 1)  # 1 pedido por consulta; guarda 1 para o fecho
-    return max(float(config.INTERVALO_MIN_DIRETO), segundos / consultas_possiveis)
-
-
-def epoca_do_jogo(j: dict) -> int | None:
-    """Época (ano) do jogo, tal como a API a indica no registo original."""
-    try:
-        return json.loads(j["bruto"])["league"]["season"]
-    except (KeyError, TypeError, ValueError):
-        return None
-
-
-def classificacao_pendente(jogos: list[dict], estado: dict, hoje: str) -> tuple[int, int] | None:
-    """Primeira liga (com jogos hoje ou amanhã) cuja classificação ainda não foi pedida hoje."""
+def classificacao_pendente(jogos: list[dict], estado: dict, hoje: str) -> str | None:
+    """Primeira competição (com jogos hoje ou amanhã) cuja classificação ainda não foi pedida hoje."""
     feitas = estado.get("classificacoes") or {}
-    ja = set(map(tuple, feitas.get("ligas", []))) if feitas.get("data") == hoje else set()
+    ja = set(feitas.get("codigos", [])) if feitas.get("data") == hoje else set()
     for j in jogos:
-        epoca = epoca_do_jogo(j)
-        chave = (j["liga_id"], epoca)
-        if epoca is not None and chave not in ja:
-            return chave
+        cod = j.get("liga_codigo")
+        if cod and cod not in ja:
+            return cod
     return None
 
 
-def decidir(agora: datetime, jogos_hoje: list[dict], estado: dict, disponiveis: int,
-            jogos_amanha: list[dict] | None = None):
+def decidir(agora: datetime, jogos_hoje: list[dict], estado: dict, jogos_amanha: list[dict] | None = None):
     """Decide a próxima ação. Devolve (ação, dados) ou (None, motivo).
 
-    Prioridades: calendário do dia → jogos em direto → classificações (só com
-    folga na quota) → atualização periódica do calendário.
+    Prioridades: calendário do dia → jogos a decorrer → classificações → atualização periódica.
     """
     if not config.API_KEY:
-        return None, "Falta configurar API_FOOTBALL_KEY no alojamento."
-    if disponiveis <= 0:
-        return None, "Quota diária esgotada (ou só resta a reserva). Retoma após as 00:00 UTC."
+        return None, "Falta configurar FOOTBALL_DATA_KEY no alojamento."
+    espera = estado.get("proxima_tentativa")
+    if espera and agora < datetime.fromisoformat(espera):
+        return None, "A aguardar antes de tentar de novo, após um erro da fonte."
 
     hoje = data_local(agora)
-    ultimo_cal = estado.get("ultimo_calendario")
-    if estado.get("data_calendario") != hoje or ultimo_cal is None:
+    if estado.get("data_calendario") != hoje:
         return "calendario", None
-
-    espera_msg = None
     ativos = jogos_ativos(jogos_hoje, agora)
+    if ativos and _passou(estado.get("ultimo_direto"), agora, config.INTERVALO_DIRETO):
+        return "direto", None
+    pendente = classificacao_pendente(jogos_hoje + (jogos_amanha or []), estado, hoje)
+    if pendente:
+        return "classificacao", pendente
     if ativos:
-        ultimo_dir = estado.get("ultimo_direto")
-        espera = intervalo_direto(ativos, agora, disponiveis)
-        if ultimo_dir is None or (agora - datetime.fromisoformat(ultimo_dir)).total_seconds() >= espera:
-            return "direto", [j["id"] for j in ativos]
-        espera_msg = f"Jogos a decorrer; próxima consulta dentro de {int(espera // 60)} min."
-
-    if disponiveis > config.LIMIAR_CLASSIFICACOES and estado.get("classificacoes_bloqueadas") != hoje:
-        pendente = classificacao_pendente(jogos_hoje + (jogos_amanha or []), estado, hoje)
-        if pendente:
-            return "classificacao", pendente
-
-    if espera_msg:
-        return None, espera_msg
-    if (agora - datetime.fromisoformat(ultimo_cal)).total_seconds() >= config.INTERVALO_SEM_DIRETO:
+        return None, "Jogos a decorrer; próxima atualização dentro de poucos minutos."
+    if _passou(estado.get("ultimo_calendario"), agora, config.INTERVALO_SEM_DIRETO):
         return "calendario", None
     return None, "Sem jogos a decorrer; calendário atualizado recentemente."
 
 
-async def pedir(cliente: httpx.AsyncClient, endpoint: str, params: dict) -> list[dict] | None:
-    """Faz um pedido à API, regista-o e devolve 'response' (ou None se houver erro)."""
-    global erro_ultimo_pedido
+# ---------- pedidos ----------
+def _falhou(erro: str, espera: timedelta, http: int | None = None):
+    agora = db.agora_utc()
+    db.guardar_estado("ultimo_erro", {"quando": agora.isoformat(), "erro": erro, "http": http})
+    db.guardar_estado("proxima_tentativa", (agora + espera).isoformat())
+    log.warning("Erro da fonte: %s", erro)
+
+
+async def pedir(cliente: httpx.AsyncClient, endpoint: str, params: dict | None = None) -> dict | None:
+    """Faz um pedido à fonte, regista-o e devolve o JSON (ou None se houver erro)."""
     try:
-        r = await cliente.get(f"{config.API_BASE}{endpoint}", params=params,
-                              headers={"x-apisports-key": config.API_KEY}, timeout=30)
+        r = await cliente.get(f"{config.API_BASE}{endpoint}", params=params or {},
+                              headers={"X-Auth-Token": config.API_KEY}, timeout=30)
     except httpx.HTTPError as e:
-        erro_ultimo_pedido = f"Falha de ligação: {e}"
-        db.registar_pedido(endpoint, None, None, erro_ultimo_pedido)
+        erro = f"Falha de ligação: {e}"
+        db.registar_pedido(endpoint, None, None, erro)
+        _falhou(erro, ESPERA_ERRO)
         return None
 
-    restantes = r.headers.get("x-ratelimit-requests-remaining")
+    restantes = r.headers.get("X-Requests-Available-Minute")
     restantes = int(restantes) if restantes and restantes.isdigit() else None
     if restantes is not None:
-        db.guardar_estado("restantes_api", restantes)
+        db.guardar_estado("restantes_minuto", restantes)
 
-    erro = None
-    dados = None
+    corpo, erro = None, None
     try:
         corpo = r.json()
-        erros = corpo.get("errors")
-        if erros:  # a API devolve erros como lista vazia ou dicionário
-            erro = "; ".join(f"{k}: {v}" for k, v in erros.items()) if isinstance(erros, dict) else str(erros)
-        else:
-            dados = corpo.get("response", [])
     except ValueError:
         erro = f"Resposta inválida (HTTP {r.status_code})"
     if r.status_code != 200 and not erro:
-        erro = f"HTTP {r.status_code}"
+        msg = corpo.get("message") if isinstance(corpo, dict) else None
+        erro = f"HTTP {r.status_code}: {msg}" if msg else f"HTTP {r.status_code}"
 
     db.registar_pedido(endpoint, r.status_code, restantes, erro)
-    erro_ultimo_pedido = erro
     if erro:
-        db.guardar_estado("ultimo_erro", {"quando": db.agora_utc().isoformat(), "erro": erro})
-        log.warning("Erro da API em %s: %s", endpoint, erro)
+        _falhou(erro, ESPERA_LIMITE if r.status_code == 429 else ESPERA_ERRO, r.status_code)
         return None
-    return dados
+    return corpo
 
 
-async def executar(acao: str, ids: list[int] | None, cliente: httpx.AsyncClient) -> int:
-    """Executa a ação decidida. Devolve o número de jogos gravados."""
+async def atualizar_jogos(cliente: httpx.AsyncClient, agora: datetime) -> int | None:
+    """Um pedido: jogos de hoje e amanhã (a fonte usa datas UTC; a margem cobre o fuso)."""
+    ini = agora.date()
+    corpo = await pedir(cliente, "/matches", {"dateFrom": ini.isoformat(),
+                                              "dateTo": (ini + timedelta(days=2)).isoformat()})
+    if corpo is None:
+        return None
+    n = 0
+    for m in corpo.get("matches") or []:
+        if (m.get("competition") or {}).get("code") in config.COMPETICOES:
+            db.guardar_jogo(normalizar_jogo(m))
+            n += 1
+    return n
+
+
+async def executar(acao: str, info, cliente: httpx.AsyncClient) -> str:
     agora = db.agora_utc()
-    gravados = 0
-    if acao == "calendario":
-        hoje = data_local(agora)
-        amanha = data_local(agora + timedelta(days=1))
-        dados = await pedir(cliente, "/fixtures", {"date": hoje, "timezone": config.FUSO})
-        if dados is not None:
-            # Os jogos de amanhã servem para preparar boletins com antecedência
-            # (só se pede se o pedido de hoje correu bem, para não gastar quota em erro).
-            seguintes = await pedir(cliente, "/fixtures", {"date": amanha, "timezone": config.FUSO})
-            for f in dados + (seguintes or []):
-                if f["league"]["id"] in config.LIGAS:
-                    db.guardar_jogo(f)
-                    gravados += 1
-        # Regista a tentativa mesmo com erro, para não repetir pedidos em ciclo
-        db.guardar_estado("data_calendario", hoje)
-        db.guardar_estado("ultimo_calendario", agora.isoformat())
-    elif acao == "direto":
-        # O plano gratuito não aceita ?ids=...; o calendário do dia traz o estado e o
-        # resultado atual de todos os jogos (incluindo os que acabaram), num só pedido.
-        dados = await pedir(cliente, "/fixtures", {"date": data_local(agora), "timezone": config.FUSO})
-        for f in dados or []:
-            if f["league"]["id"] in config.LIGAS:
-                db.guardar_jogo(f)
-                gravados += 1 if f["fixture"]["id"] in ids else 0
-        db.guardar_estado("ultimo_direto", agora.isoformat())
-    elif acao == "classificacao":
-        liga, epoca = ids
-        dados = await pedir(cliente, "/standings", {"league": liga, "season": epoca})
-        if dados is None and "do not have access" in (erro_ultimo_pedido or ""):
-            # O plano não inclui classificações desta época: não insistir hoje (poupa quota)
-            db.guardar_estado("classificacoes_bloqueadas", data_local(agora))
-        for item in dados or []:
-            for grupo in item["league"].get("standings", []):
-                for linha in grupo:
-                    db.guardar_classificacao(liga, epoca, linha)
-                    gravados += 1
-        # Marca a liga como tratada hoje, mesmo com erro, para não repetir em ciclo
-        hoje = data_local(agora)
+    hoje = data_local(agora)
+    if acao in ("calendario", "direto"):
+        n = await atualizar_jogos(cliente, agora)
+        if n is None:
+            return "Erro ao atualizar os jogos (ver último erro)."
+        db.guardar_estado("ultimo_direto" if acao == "direto" else "ultimo_calendario", agora.isoformat())
+        if acao == "calendario":
+            db.guardar_estado("data_calendario", hoje)
+            return f"Calendário de hoje e amanhã atualizado ({n} jogos)."
+        return f"Jogos a decorrer atualizados ({n} jogos lidos)."
+
+    if acao == "classificacao":
+        codigo = info
+        corpo = await pedir(cliente, f"/competitions/{codigo}/standings")
         feitas = db.ler_estado("classificacoes") or {}
-        ligas = feitas.get("ligas", []) if feitas.get("data") == hoje else []
-        db.guardar_estado("classificacoes", {"data": hoje, "ligas": ligas + [[liga, epoca]]})
-    return gravados
+        codigos = feitas.get("codigos", []) if feitas.get("data") == hoje else []
+        # Marca como tratada hoje mesmo com erro (ex.: fora do plano), para não repetir
+        db.guardar_estado("classificacoes", {"data": hoje, "codigos": codigos + [codigo]})
+        if corpo is None:
+            bloq = db.ler_estado("classificacoes_bloqueadas") or {}
+            lista = bloq.get("codigos", []) if bloq.get("data") == hoje else []
+            db.guardar_estado("classificacoes_bloqueadas", {"data": hoje, "codigos": lista + [codigo]})
+            erro = db.ler_estado("ultimo_erro") or {}
+            if erro.get("http") != 429:
+                db.guardar_estado("proxima_tentativa", None)  # não atrasar o resto da recolha
+            return f"Classificação de {codigo} indisponível."
+        liga_id = (corpo.get("competition") or {}).get("id")
+        epoca = (corpo.get("season") or {}).get("id")
+        linhas = normalizar_classificacao(corpo)
+        for tid, dados in linhas:
+            db.guardar_classificacao(liga_id, epoca, tid, dados)
+        return f"Classificação de {codigo} atualizada ({len(linhas)} equipas)."
+    return "Ação desconhecida."
 
 
 def estado_atual() -> dict:
     return {k: db.ler_estado(k) for k in
-            ("data_calendario", "ultimo_calendario", "ultimo_direto", "restantes_api",
-             "ultimo_erro", "classificacoes", "classificacoes_bloqueadas")}
-
-
-MENSAGENS = {
-    "calendario": "Calendário de hoje e amanhã atualizado ({n} jogos).",
-    "direto": "Jogos em direto atualizados ({n} jogos).",
-    "classificacao": "Classificação atualizada ({n} equipas).",
-}
+            ("data_calendario", "ultimo_calendario", "ultimo_direto", "restantes_minuto",
+             "ultimo_erro", "classificacoes", "classificacoes_bloqueadas", "proxima_tentativa")}
 
 
 async def passo(cliente: httpx.AsyncClient) -> str:
-    """Um passo do ciclo: decide e, se for caso disso, executa."""
+    """Um passo do ciclo (1 por minuto): decide e, se for caso disso, faz 1 pedido."""
     agora = db.agora_utc()
-    estado = estado_atual()
-    disponiveis = pedidos_disponiveis(estado["restantes_api"], db.pedidos_hoje_utc())
-    acao, info = decidir(agora, db.jogos_do_dia(data_local(agora)), estado, disponiveis,
+    acao, info = decidir(agora, db.jogos_do_dia(data_local(agora)), estado_atual(),
                          db.jogos_do_dia(data_local(agora + timedelta(days=1))))
-    if acao is None:
-        db.guardar_estado("ultima_decisao", info)
-        return info
-    n = await executar(acao, info, cliente)
-    msg = MENSAGENS[acao].format(n=n)
+    msg = info if acao is None else await executar(acao, info, cliente)
     db.guardar_estado("ultima_decisao", msg)
     return msg
