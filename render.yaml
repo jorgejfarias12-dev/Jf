@@ -11,6 +11,30 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: "3.12.7"
+      - key: FOOTBALL_DATA_KEY
+        sync: false          # chave da football-data.org; o Render pede o valor no painel
+      - key: TOKEN_RECOLHA
+        generateValue: true  # token aleatório para um agendador externo
+      - key: COMPETICOES
+        value: "PPL,PL,PD,SA,BL1,FL1,CL"
+      - key: FUSO_HORARIO
+        value: Europe/Lisbon
+      # Para guardar histórico, criar uma base Postgres e acrescentar:
+      # - key: DATABASE_URL
+      #   fromDatabase: { name: analise-futebol-bd, property: connectionString }
+# Blueprint do Render: New → Blueprint → escolher o repositório.
+services:
+  - type: web
+    name: analise-futebol
+    runtime: python
+    plan: free
+    region: frankfurt
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /saude
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.7"
       - key: API_FOOTBALL_KEY
         sync: false          # o Render pede o valor no painel; nunca fica no repositório
       - key: TOKEN_RECOLHA
