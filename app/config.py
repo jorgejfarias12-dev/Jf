@@ -1,36 +1,34 @@
 """Configuração lida das variáveis de ambiente (definidas no painel do Render).
 
-Nenhuma chave é escrita no código. Se API_FOOTBALL_KEY faltar, a aplicação
+Nenhuma chave é escrita no código. Se FOOTBALL_DATA_KEY faltar, a aplicação
 arranca na mesma, mas não recolhe dados e mostra o aviso na página.
 """
 import os
 
-# Chave secreta da API-Football (painel do Render → Environment)
-API_KEY = os.getenv("API_FOOTBALL_KEY", "").strip()
-API_BASE = os.getenv("API_FOOTBALL_BASE", "https://v3.football.api-sports.io")
+# Fonte de dados: football-data.org (plano gratuito, API v4).
+# Chave secreta: painel do Render → Environment → FOOTBALL_DATA_KEY
+API_KEY = os.getenv("FOOTBALL_DATA_KEY", "").strip()
+API_BASE = os.getenv("FOOTBALL_DATA_BASE", "https://api.football-data.org/v4")
+FONTE = "football-data.org"
 
-# Ligas acompanhadas (IDs da API-Football), separadas por vírgulas.
-# 94 Liga Portugal, 39 Premier League, 140 La Liga, 135 Serie A,
-# 78 Bundesliga, 61 Ligue 1, 2 Liga dos Campeões, 3 Liga Europa,
-# 848 Liga Conferência
-LIGAS = [int(x) for x in os.getenv("LIGAS", "94,39,140,135,78,61,2,3,848").split(",") if x.strip()]
+# Competições acompanhadas (códigos da football-data.org), separadas por vírgulas.
+# PPL Primeira Liga, PL Premier League, PD La Liga, SA Serie A, BL1 Bundesliga,
+# FL1 Ligue 1, CL Liga dos Campeões, DED Eredivisie, ELC Championship.
+# (A Liga Europa e a Liga Conferência não fazem parte do plano gratuito.)
+COMPETICOES = [x.strip().upper() for x in
+               os.getenv("COMPETICOES", "PPL,PL,PD,SA,BL1,FL1,CL").split(",") if x.strip()]
 
 FUSO = os.getenv("FUSO_HORARIO", "Europe/Lisbon")
 
-# Limite diário do plano (gratuito = 100). Ajustar se mudar de plano.
-LIMITE_DIARIO = int(os.getenv("LIMITE_DIARIO", "100"))
-# Pedidos que ficam sempre de reserva (nunca são gastos pela recolha automática)
-RESERVA = int(os.getenv("RESERVA_PEDIDOS", "5"))
+# Limite do plano gratuito: 10 pedidos por minuto (sem limite diário).
+# A recolha faz no máximo 1 pedido por minuto, muito abaixo deste limite.
+LIMITE_MINUTO = int(os.getenv("LIMITE_MINUTO", "10"))
 
-# Intervalo mínimo entre consultas de jogos em direto, em segundos.
-# No plano gratuito, 900 s (15 min). Num plano pago pode descer até 15 s,
-# a cadência de atualização indicada pela API-Football.
-INTERVALO_MIN_DIRETO = int(os.getenv("INTERVALO_MIN_DIRETO", "900"))
-# Classificações (posição, forma, golos) só se pedem com mais do que este
-# número de pedidos disponíveis, para nunca prejudicar os jogos em direto.
-LIMIAR_CLASSIFICACOES = int(os.getenv("LIMIAR_CLASSIFICACOES", "30"))
-# Sem jogos em direto: atualizar o calendário do dia de X em X segundos
-INTERVALO_SEM_DIRETO = int(os.getenv("INTERVALO_SEM_DIRETO", str(6 * 3600)))
+# Intervalo entre atualizações enquanto há jogos a decorrer (segundos).
+# No plano gratuito os resultados chegam com atraso, por isso não vale a pena menos.
+INTERVALO_DIRETO = int(os.getenv("INTERVALO_DIRETO", "300"))
+# Sem jogos a decorrer: atualizar o calendário de X em X segundos
+INTERVALO_SEM_DIRETO = int(os.getenv("INTERVALO_SEM_DIRETO", str(3 * 3600)))
 
 # Base de dados: Postgres se DATABASE_URL existir; caso contrário SQLite local
 # (no Render gratuito, o SQLite perde-se ao reiniciar).
@@ -40,7 +38,7 @@ if DATABASE_URL.startswith("postgres://"):
 elif DATABASE_URL.startswith("postgresql://"):
     DATABASE_URL = DATABASE_URL.replace("postgresql://", "postgresql+psycopg://", 1)
 
-# Token para disparar a recolha a partir de um agendador externo (cron-job.org, etc.)
+# Token para disparar a recolha a partir de um agendador externo
 TOKEN_RECOLHA = os.getenv("TOKEN_RECOLHA", "").strip()
 
 # Desligar o ciclo automático (útil em testes)
