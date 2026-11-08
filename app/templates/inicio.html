@@ -43,18 +43,18 @@
 <body>
 <main>
   <h1>Jogos de {{ dia }}</h1>
-  <p class="sub">Dados reais da API-Football. Sem previsões nem valores estimados.</p>
+  <p class="sub">Dados reais da {{ estado.fonte }} (plano gratuito, com algum atraso). Sem previsões nem valores estimados.</p>
 
   {% if not estado.chave_configurada %}
   <div class="cartao erro"><strong>Recolha parada:</strong> falta a variável
-    <code>API_FOOTBALL_KEY</code> no painel do alojamento.</div>
+    <code>FOOTBALL_DATA_KEY</code> no painel do alojamento.</div>
   {% endif %}
   {% if not estado.persistente %}
   <div class="cartao aviso">Base de dados local (SQLite): os dados perdem-se quando o serviço
     reinicia ou adormece. Para guardar histórico, ligar uma base Postgres (<code>DATABASE_URL</code>).</div>
   {% endif %}
   {% if estado.ultimo_erro %}
-  <div class="cartao erro"><strong>Último erro da API</strong> ({{ estado.ultimo_erro.quando|hora }}):
+  <div class="cartao erro"><strong>Último erro da fonte</strong> ({{ estado.ultimo_erro.quando|hora }}):
     {{ estado.ultimo_erro.erro }}</div>
   {% endif %}
 
@@ -81,13 +81,11 @@
   {% endfor %}
 
   <div class="cartao">
-    <h2>Quota da API (reinicia às 00:00 UTC)</h2>
+    <h2>Pedidos à fonte (limite: {{ estado.limite_minuto }} por minuto, sem limite diário)</h2>
     <div class="quota">
-      <span>Pedidos hoje: <strong>{{ estado.pedidos_hoje }}</strong> / {{ estado.limite }}</span>
-      <span>Restantes (API): <strong>{{ estado.restantes_api if estado.restantes_api is not none else '—' }}</strong></span>
-      <span>Disponíveis para recolha: <strong>{{ estado.disponiveis }}</strong></span>
+      <span>Pedidos hoje: <strong>{{ estado.pedidos_hoje }}</strong></span>
+      <span>Disponíveis neste minuto: <strong>{{ estado.restantes_minuto if estado.restantes_minuto is not none else '—' }}</strong></span>
     </div>
-    <div class="barra"><span style="width:{{ [100, (estado.pedidos_hoje * 100 // estado.limite)]|min }}%"></span></div>
     <p class="sub" style="margin:8px 0 0">{{ estado.ultima_decisao or 'A aguardar o primeiro ciclo.' }}<br>
       Calendário: {{ estado.ultimo_calendario|hora }} · Direto: {{ estado.ultimo_direto|hora }}</p>
   </div>
