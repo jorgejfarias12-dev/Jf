@@ -26,6 +26,9 @@ RESERVA = int(os.getenv("RESERVA_PEDIDOS", "5"))
 # No plano gratuito, 900 s (15 min). Num plano pago pode descer até 15 s,
 # a cadência de atualização indicada pela API-Football.
 INTERVALO_MIN_DIRETO = int(os.getenv("INTERVALO_MIN_DIRETO", "900"))
+# Classificações (posição, forma, golos) só se pedem com mais do que este
+# número de pedidos disponíveis, para nunca prejudicar os jogos em direto.
+LIMIAR_CLASSIFICACOES = int(os.getenv("LIMIAR_CLASSIFICACOES", "30"))
 # Sem jogos em direto: atualizar o calendário do dia de X em X segundos
 INTERVALO_SEM_DIRETO = int(os.getenv("INTERVALO_SEM_DIRETO", str(6 * 3600)))
 
