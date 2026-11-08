@@ -251,7 +251,9 @@ function linhaEquipa(nome, s, onde) {
       marca ${media(l.gm, l.j)} e sofre ${media(l.gs, l.j)} por jogo</div>`;
 }
 function blocoStats(j) {
-  if (!j.stats_casa && !j.stats_fora) return '<div class="st-vazio">Classificação ainda não recolhida.</div>';
+  if (!j.stats_casa && !j.stats_fora) return dados?.classificacoes_indisponiveis
+    ? '<div class="st-vazio">Classificação não disponível no plano gratuito da API.</div>'
+    : '<div class="st-vazio">Classificação ainda não recolhida.</div>';
   return `<div class="stats">${linhaEquipa(j.casa, j.stats_casa, 'Em casa')}${linhaEquipa(j.fora, j.stats_fora, 'Fora')}</div>`;
 }
 
