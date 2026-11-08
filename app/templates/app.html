@@ -244,7 +244,9 @@ function linhaEquipa(nome, s, onde) {
   if (!s) return '';
   const forma = (s.forma || '').slice(-5).split('').map(c => FORMA[c]
     ? `<span class="f ${FORMA[c][1]}">${FORMA[c][0]}</span>` : '').join('');
-  const l = s.local || {};
+  let l = s.local || {};
+  // o plano gratuito da fonte só traz a tabela geral; nesse caso mostra-se o total do campeonato
+  if (l.j == null && s.total && s.total.j != null) { l = s.total; onde = 'No campeonato'; }
   return `<div class="st"><span class="st-nome">${s.posicao ? s.posicao + '.º ' : ''}${esc(nome)}</span>
     <span class="forma" title="Resultados dos últimos 5 jogos">${forma}</span></div>
     <div class="st-num">${onde}: ${l.v ?? '—'}V ${l.e ?? '—'}E ${l.d ?? '—'}D em ${l.j ?? '—'} jogos ·
