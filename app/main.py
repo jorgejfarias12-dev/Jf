@@ -1,6 +1,5 @@
 """Aplicação web: mostra os jogos recolhidos e o estado da recolha."""
 import asyncio
-import json
 import logging
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
@@ -59,8 +58,8 @@ def resumo_estado() -> dict:
         **estado,
         "chave_configurada": bool(config.API_KEY),
         "pedidos_hoje": feitos,
-        "limite": config.LIMITE_DIARIO,
-        "disponiveis": recolha.pedidos_disponiveis(estado["restantes_api"], feitos),
+        "fonte": config.FONTE,
+        "limite_minuto": config.LIMITE_MINUTO,
         "ultima_decisao": db.ler_estado("ultima_decisao"),
         "persistente": not config.DATABASE_URL.startswith("sqlite"),
     }
@@ -87,14 +86,6 @@ def inicio(request: Request, data: str | None = None):
     })
 
 
-def resultado_90(bruto: str | None) -> tuple[int | None, int | None]:
-    """Resultado aos 90 minutos (o que conta para 1X2), tal como vem da API."""
-    if not bruto:
-        return None, None
-    ft = (json.loads(bruto).get("score") or {}).get("fulltime") or {}
-    return ft.get("home"), ft.get("away")
-
-
 def resumo_equipa(linha: dict | None, lado: str) -> dict | None:
     """Números reais da classificação. 'lado' é 'home' ou 'away' (registo em casa/fora)."""
     if not linha:
@@ -113,30 +104,27 @@ def resumo_equipa(linha: dict | None, lado: str) -> dict | None:
 
 def estatisticas(j: dict) -> tuple[dict | None, dict | None]:
     """Classificação das duas equipas, se já tiver sido recolhida (nunca estimada)."""
-    try:
-        b = json.loads(j["bruto"])
-        epoca = b["league"]["season"]
-        casa = db.classificacao(j["liga_id"], epoca, b["teams"]["home"]["id"])
-        fora = db.classificacao(j["liga_id"], epoca, b["teams"]["away"]["id"])
-    except (KeyError, TypeError, ValueError):
+    if j.get("liga_id") is None or j.get("epoca") is None:
         return None, None
+    casa = db.classificacao(j["liga_id"], j["epoca"], j["casa_id"]) if j.get("casa_id") else None
+    fora = db.classificacao(j["liga_id"], j["epoca"], j["fora_id"]) if j.get("fora_id") else None
     return resumo_equipa(casa, "home"), resumo_equipa(fora, "away")
 
 
 @app.get("/api/jogos")
 def api_jogos(data: str | None = None):
     dia = data or recolha.data_local(db.agora_utc())
+    bloq = set((db.ler_estado("classificacoes_bloqueadas") or {}).get("codigos", []))
     jogos = []
     for j in db.jogos_do_dia(dia):
-        casa90, fora90 = resultado_90(j.get("bruto"))
         stats_casa, stats_fora = estatisticas(j)
         jogos.append({**{k: v for k, v in j.items() if k != "bruto"},
-                      "golos_90_casa": casa90, "golos_90_fora": fora90,
-                      "stats_casa": stats_casa, "stats_fora": stats_fora})
-    return {"data": dia, "fonte": "API-Football",
-            "atualizado": db.ler_estado("ultimo_direto") or db.ler_estado("ultimo_calendario"),
+                      "stats_casa": stats_casa, "stats_fora": stats_fora,
+                      "classificacao_indisponivel": j.get("liga_codigo") in bloq})
+    ultimos = [x for x in (db.ler_estado("ultimo_direto"), db.ler_estado("ultimo_calendario")) if x]
+    return {"data": dia, "fonte": config.FONTE,
+            "atualizado": max(ultimos) if ultimos else None,
             "terminados": sorted(recolha.TERMINADOS), "a_decorrer": sorted(recolha.A_DECORRER),
-            "classificacoes_indisponiveis": db.ler_estado("classificacoes_bloqueadas") is not None,
             "jogos": jogos}
 
 
