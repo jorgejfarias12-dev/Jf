@@ -3,7 +3,7 @@ import asyncio
 import json
 import logging
 from contextlib import asynccontextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -95,14 +95,44 @@ def resultado_90(bruto: str | None) -> tuple[int | None, int | None]:
     return ft.get("home"), ft.get("away")
 
 
+def resumo_equipa(linha: dict | None, lado: str) -> dict | None:
+    """Números reais da classificação. 'lado' é 'home' ou 'away' (registo em casa/fora)."""
+    if not linha:
+        return None
+
+    def bloco(b):
+        b = b or {}
+        g = b.get("goals") or {}
+        return {"j": b.get("played"), "v": b.get("win"), "e": b.get("draw"), "d": b.get("lose"),
+                "gm": g.get("for"), "gs": g.get("against")}
+
+    return {"posicao": linha.get("rank"), "pontos": linha.get("points"), "grupo": linha.get("group"),
+            "forma": linha.get("form"), "total": bloco(linha.get("all")),
+            "local": bloco(linha.get(lado)), "atualizado": linha.get("_atualizado")}
+
+
+def estatisticas(j: dict) -> tuple[dict | None, dict | None]:
+    """Classificação das duas equipas, se já tiver sido recolhida (nunca estimada)."""
+    try:
+        b = json.loads(j["bruto"])
+        epoca = b["league"]["season"]
+        casa = db.classificacao(j["liga_id"], epoca, b["teams"]["home"]["id"])
+        fora = db.classificacao(j["liga_id"], epoca, b["teams"]["away"]["id"])
+    except (KeyError, TypeError, ValueError):
+        return None, None
+    return resumo_equipa(casa, "home"), resumo_equipa(fora, "away")
+
+
 @app.get("/api/jogos")
 def api_jogos(data: str | None = None):
     dia = data or recolha.data_local(db.agora_utc())
     jogos = []
     for j in db.jogos_do_dia(dia):
         casa90, fora90 = resultado_90(j.get("bruto"))
+        stats_casa, stats_fora = estatisticas(j)
         jogos.append({**{k: v for k, v in j.items() if k != "bruto"},
-                      "golos_90_casa": casa90, "golos_90_fora": fora90})
+                      "golos_90_casa": casa90, "golos_90_fora": fora90,
+                      "stats_casa": stats_casa, "stats_fora": stats_fora})
     return {"data": dia, "fonte": "API-Football",
             "atualizado": db.ler_estado("ultimo_direto") or db.ler_estado("ultimo_calendario"),
             "terminados": sorted(recolha.TERMINADOS), "a_decorrer": sorted(recolha.A_DECORRER),
