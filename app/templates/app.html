@@ -45,11 +45,30 @@
                      border:1px solid var(--linha); background:var(--fundo); color:var(--texto); }
   .escolhas button.sel { background:var(--sel); color:var(--sel-texto); border-color:var(--sel); }
   .escolhas button:disabled { opacity:.35; }
+  .escolhas.golos { grid-template-columns:repeat(4, 1fr); margin-top:6px; }
+  .escolhas.golos button { font-size:.8rem; }
+  .stats { margin-top:8px; padding-top:8px; border-top:1px dashed var(--linha); }
+  .st { display:flex; justify-content:space-between; align-items:center; gap:8px; font-size:.85rem; margin-top:4px; }
+  .st-nome { font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .st-num { font-size:.75rem; color:var(--suave); margin-bottom:2px; }
+  .st-vazio { font-size:.75rem; color:var(--suave); margin-top:6px; }
+  .forma { display:flex; gap:3px; flex-shrink:0; }
+  .f { width:18px; height:18px; border-radius:4px; font-size:.65rem; font-weight:800; display:grid; place-items:center; color:#fff; }
+  .f.v { background:var(--verde); } .f.e { background:#8a948f; } .f.d { background:var(--vermelho); }
   .vazio { text-align:center; color:var(--suave); padding:40px 10px; }
   .cartao { background:var(--cartao); border:1px solid var(--linha); border-radius:12px; padding:12px; margin-bottom:10px; }
   .sel-linha { display:grid; grid-template-columns:1fr 84px 36px; gap:8px; align-items:center;
                padding:8px 0; border-top:1px solid var(--linha); }
   .sel-linha:first-child { border-top:0; }
+  input.num.fonte { grid-column:1 / -1; text-align:left; font-size:.9rem; padding:7px 8px; }
+  .fontes { width:100%; border-collapse:collapse; font-size:.85rem; font-variant-numeric:tabular-nums; }
+  .fontes th { font-size:.7rem; font-weight:600; color:var(--suave); text-align:right; padding:4px 3px; }
+  .fontes td { text-align:right; padding:7px 3px; border-top:1px solid var(--linha); }
+  .fontes th:first-child, .fontes td:first-child { text-align:left; }
+  .fontes td:first-child { font-weight:600; max-width:120px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .fontes .pos { color:var(--verde); font-weight:700; } .fontes .neg { color:var(--vermelho); font-weight:700; }
+  .fontes .peq { display:block; font-size:.65rem; font-weight:400; color:var(--ambar); }
+  .so-dicas { background:color-mix(in srgb, var(--suave) 18%, transparent); color:var(--suave); }
   .sel-nome { font-size:.9rem; } .sel-nome b { display:block; font-size:.95rem; }
   input.num { width:100%; font:inherit; font-size:1rem; padding:9px 8px; border-radius:8px;
               border:1px solid var(--linha); background:var(--fundo); color:var(--texto); text-align:center; }
@@ -64,7 +83,7 @@
   .botao.sec { background:var(--fundo); color:var(--texto); border:1px solid var(--linha); }
   .aviso { border-left:4px solid var(--ambar); font-size:.9rem; }
   .nota { font-size:.8rem; color:var(--suave); margin-top:8px; }
-  .estado-bol { font-size:.75rem; font-weight:700; padding:3px 8px; border-radius:999px; }
+  .estado-bol { font-size:.75rem; font-weight:700; padding:3px 8px; border-radius:999px; white-space:nowrap; }
   .ganho { background:color-mix(in srgb, var(--verde) 18%, transparent); color:var(--verde); }
   .perdido { background:color-mix(in srgb, var(--vermelho) 18%, transparent); color:var(--vermelho); }
   .pendente { background:color-mix(in srgb, var(--ambar) 18%, transparent); color:var(--ambar); }
@@ -129,8 +148,18 @@ let diaAtual = null, dados = null;
 const cacheDias = {};                     // data -> resposta /api/jogos
 
 const ESCOLHAS = ['1', 'X', '2', '1X', 'X2', '12'];
+const GOLOS = ['+2.5', '-2.5', 'AM', 'AMN'];
 const NOME_ESCOLHA = { '1': 'Vitória casa', 'X': 'Empate', '2': 'Vitória fora',
-                       '1X': 'Casa ou empate', 'X2': 'Empate ou fora', '12': 'Casa ou fora' };
+                       '1X': 'Casa ou empate', 'X2': 'Empate ou fora', '12': 'Casa ou fora',
+                       '+2.5': 'Mais de 2,5 golos', '-2.5': 'Menos de 2,5 golos',
+                       'AM': 'Ambas marcam: sim', 'AMN': 'Ambas marcam: não' };
+const ROTULO = { '+2.5': '+2,5', '-2.5': '−2,5', 'AM': 'AM sim', 'AMN': 'AM não' };
+const rotulo = e => ROTULO[e] || e;
+let maxBoletim = ler('max_boletim_v1', null);  // valor máximo por boletim (€)
+let ultimaFonte = ler('ultima_fonte_v1', 'Eu'); // fonte sugerida para novas escolhas
+const SEM_FONTE = 'Sem fonte';
+const AMOSTRA_MINIMA = 30;                      // abaixo disto, os números dizem pouco
+const nomeFonte = f => String(f ?? '').trim() || SEM_FONTE;
 const ANULADOS = new Set(['PST', 'CANC', 'ABD']);
 
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -197,13 +226,33 @@ function desenharJogos() {
                  : acabou ? esc(j.estado === 'FT' ? 'Terminado' : j.estado_longo)
                  : horaLocal(j.inicio_utc);
     const escolhido = selecao[j.id]?.escolha;
-    const botoes = ESCOLHAS.map(e => `<button data-id="${j.id}" data-e="${e}" class="${escolhido === e ? 'sel' : ''}"
-       ${acabou ? 'disabled' : ''} aria-label="${NOME_ESCOLHA[e]}">${e}</button>`).join('');
+    const botao = e => `<button data-id="${j.id}" data-e="${e}" class="${escolhido === e ? 'sel' : ''}"
+       ${acabou || aoVivo ? 'disabled' : ''} aria-label="${NOME_ESCOLHA[e]}">${rotulo(e)}</button>`;
     return `<div class="jogo"><div class="linha1"><div><div class="equipas">${esc(j.casa)} – ${esc(j.fora)}</div>
       <div class="info">${estado}</div></div><div class="res">${res}</div></div>
-      <div class="escolhas">${botoes}</div></div>`;
+      ${blocoStats(j)}
+      <div class="escolhas">${ESCOLHAS.map(botao).join('')}</div>
+      <div class="escolhas golos">${GOLOS.map(botao).join('')}</div></div>`;
   }).join('')).join('');
   lista.querySelectorAll('.escolhas button').forEach(b => b.onclick = () => escolher(+b.dataset.id, b.dataset.e));
+}
+
+// Estatísticas reais da classificação (nada é estimado; sem dados, não se mostra nada)
+const FORMA = { W: ['V', 'v'], D: ['E', 'e'], L: ['D', 'd'] };
+const media = (g, n) => n ? (g / n).toFixed(1).replace('.', ',') : '—';
+function linhaEquipa(nome, s, onde) {
+  if (!s) return '';
+  const forma = (s.forma || '').slice(-5).split('').map(c => FORMA[c]
+    ? `<span class="f ${FORMA[c][1]}">${FORMA[c][0]}</span>` : '').join('');
+  const l = s.local || {};
+  return `<div class="st"><span class="st-nome">${s.posicao ? s.posicao + '.º ' : ''}${esc(nome)}</span>
+    <span class="forma" title="Últimos 5 jogos (mais recente à direita)">${forma}</span></div>
+    <div class="st-num">${onde}: ${l.v ?? '—'}V ${l.e ?? '—'}E ${l.d ?? '—'}D em ${l.j ?? '—'} jogos ·
+      marca ${media(l.gm, l.j)} e sofre ${media(l.gs, l.j)} por jogo</div>`;
+}
+function blocoStats(j) {
+  if (!j.stats_casa && !j.stats_fora) return '<div class="st-vazio">Classificação ainda não recolhida.</div>';
+  return `<div class="stats">${linhaEquipa(j.casa, j.stats_casa, 'Em casa')}${linhaEquipa(j.fora, j.stats_fora, 'Fora')}</div>`;
 }
 
 function escolher(id, e) {
@@ -211,8 +260,9 @@ function escolher(id, e) {
   if (selecao[id]?.escolha === e) { delete selecao[id]; toast('Retirado do boletim'); }
   else {
     selecao[id] = { id, data: j.data_local, casa: j.casa, fora: j.fora, liga: j.liga_nome,
-                    inicio: j.inicio_utc, escolha: e, odd: selecao[id]?.odd ?? '' };
-    toast(`${e} · ${j.casa} – ${j.fora}`);
+                    inicio: j.inicio_utc, escolha: e, odd: selecao[id]?.odd ?? '',
+                    fonte: selecao[id]?.fonte ?? ultimaFonte };
+    toast(`${rotulo(e)} · ${j.casa} – ${j.fora}`);
   }
   guardar('selecao_v1', selecao); contarSelecoes(); desenharJogos();
 }
@@ -245,9 +295,12 @@ function desenharBoletim() {
     return;
   }
   el.innerHTML = `<div class="cartao">${sels.map(s => `<div class="sel-linha">
-      <div class="sel-nome"><b>${esc(s.casa)} – ${esc(s.fora)}</b>${s.escolha} · ${NOME_ESCOLHA[s.escolha]} · ${horaLocal(s.inicio)}</div>
+      <div class="sel-nome"><b>${esc(s.casa)} – ${esc(s.fora)}</b>${NOME_ESCOLHA[s.escolha]} · ${horaLocal(s.inicio)}</div>
       <input class="num" inputmode="decimal" placeholder="odd" value="${esc(s.odd)}" data-odd="${s.id}" aria-label="Odd">
-      <button class="x" data-tirar="${s.id}" aria-label="Retirar">✕</button></div>`).join('')}</div>
+      <button class="x" data-tirar="${s.id}" aria-label="Retirar">✕</button>
+      <input class="num fonte" list="lista-fontes" placeholder="Fonte da dica (ex.: nome do analista)"
+        value="${esc(s.fonte ?? '')}" data-fonte="${s.id}" aria-label="Fonte da dica"></div>`).join('')}
+      <datalist id="lista-fontes">${fontesConhecidas().map(f => `<option value="${esc(f)}">`).join('')}</datalist></div>
     <div class="cartao">
       <label class="campo" for="valor">Valor a apostar (€)</label>
       <input class="num" id="valor" inputmode="decimal" placeholder="ex.: 2,00" value="${esc(valorBoletim)}">
@@ -257,11 +310,18 @@ function desenharBoletim() {
       </div>
       <div id="aviso-limite"></div>
       <button class="botao" id="guardar">Guardar boletim</button>
+      <button class="botao sec" id="so-dicas">Só registar as dicas (sem apostar)</button>
       <button class="botao sec" id="copiar">Copiar escolhas</button>
       <button class="botao sec" id="limpar">Limpar boletim</button>
       <p class="nota">Introduz as odds tal como aparecem no Placard. A app não adivinha odds.
-        Faz a aposta no Placard e depois carrega em «Guardar boletim» para a acompanhar aqui.</p>
+        Faz a aposta no Placard e depois carrega em «Guardar boletim» para a acompanhar aqui.
+        Para testar um analista sem gastar dinheiro, usa «Só registar as dicas»: contam para as
+        estatísticas da fonte, mas não para a tua banca.</p>
     </div>`;
+  el.querySelectorAll('[data-fonte]').forEach(i => i.oninput = () => {
+    selecao[i.dataset.fonte].fonte = i.value; ultimaFonte = i.value;
+    guardar('selecao_v1', selecao); guardar('ultima_fonte_v1', ultimaFonte); });
+  document.getElementById('so-dicas').onclick = guardarSoDicas;
   el.querySelectorAll('[data-odd]').forEach(i => i.oninput = () => {
     selecao[i.dataset.odd].odd = i.value; guardar('selecao_v1', selecao); atualizarTotais(); });
   el.querySelectorAll('[data-tirar]').forEach(b => b.onclick = () => {
@@ -279,28 +339,89 @@ function atualizarTotais() {
   document.getElementById('t-odd').textContent = t.completo ? t.oddTotal.toFixed(2).replace('.', ',') : '—';
   document.getElementById('t-ret').textContent = Number.isFinite(t.retorno) ? euros(t.retorno) : '—';
   const av = document.getElementById('aviso-limite');
-  if (limite && t.valor > 0 && gastoDoMes() + t.valor > limite) {
-    av.innerHTML = `<div class="cartao aviso" style="margin-top:10px">Com este boletim passas o teu limite mensal
-      de ${euros(limite)} (já gastaste ${euros(gastoDoMes())} este mês).</div>`;
-  } else av.innerHTML = '';
+  const avisos = [];
+  if (maxBoletim && t.valor > maxBoletim)
+    avisos.push(`O valor passa o teu máximo por boletim de ${euros(maxBoletim)}.`);
+  if (limite && t.valor > 0 && gastoDoMes() + t.valor > limite)
+    avisos.push(`Com este boletim passas o teu limite mensal de ${euros(limite)} (já gastaste ${euros(gastoDoMes())} este mês).`);
+  av.innerHTML = avisos.length ? `<div class="cartao aviso" style="margin-top:10px">${avisos.join('<br>')}</div>` : '';
 }
 
 function guardarBoletim() {
   const t = totaisBoletim();
   if (!t.completo) return toast('Falta a odd de alguma escolha');
   if (!(t.valor > 0)) return toast('Indica o valor apostado');
+  if (maxBoletim && t.valor > maxBoletim &&
+      !confirm(`O valor passa o teu máximo por boletim de ${euros(maxBoletim)}. Guardar mesmo assim?`)) return;
   if (limite && gastoDoMes() + t.valor > limite &&
       !confirm(`Este boletim ultrapassa o teu limite mensal de ${euros(limite)}. Guardar mesmo assim?`)) return;
-  boletins.unshift({ id: Date.now(), criado: dataLisboa(), valor: t.valor, oddTotal: t.oddTotal,
-    selecoes: t.sels.map(s => ({ ...s, odd: num(s.odd), resultado: null })), estado: 'pendente', retorno: 0 });
+  registar(t, t.valor, false);
+  toast('Boletim guardado');
+}
+
+// Regista as dicas para estatística, sem dinheiro envolvido (valor 0)
+function guardarSoDicas() {
+  const t = totaisBoletim();
+  if (!t.completo) return toast('Falta a odd de alguma escolha');
+  registar(t, 0, true);
+  toast('Dicas registadas');
+}
+
+function registar(t, valor, soDicas) {
+  boletins.unshift({ id: Date.now(), criado: dataLisboa(), valor, oddTotal: t.oddTotal, soDicas,
+    selecoes: t.sels.map(s => ({ ...s, odd: num(s.odd), fonte: nomeFonte(s.fonte), resultado: null })),
+    estado: 'pendente', retorno: 0 });
   guardar('boletins_v1', boletins);
   selecao = {}; valorBoletim = ''; guardar('selecao_v1', selecao); guardar('valor_v1', '');
-  contarSelecoes(); toast('Boletim guardado'); abrir('banca');
+  contarSelecoes(); abrir('banca');
+}
+
+// ---------- estatísticas por fonte (calculadas só com resultados reais) ----------
+function fontesConhecidas() {
+  return [...new Set(boletins.flatMap(b => b.selecoes.map(s => nomeFonte(s.fonte))))]
+    .filter(f => f !== SEM_FONTE).sort((a, b) => a.localeCompare(b, 'pt'));
+}
+
+// Cada dica conta como uma aposta simples de 1 € à odd do Placard que registaste:
+// certa → ganha (odd − 1); errada → perde 1; anulada → 0 (não entra na contagem).
+function estatisticasFontes() {
+  const f = {};
+  for (const b of boletins) for (const s of b.selecoes) {
+    const n = nomeFonte(s.fonte);
+    const x = (f[n] ??= { fonte: n, certas: 0, erradas: 0, pendentes: 0, lucro: 0, somaOdd: 0 });
+    if (s.resultado === 'certa') { x.certas++; x.lucro += s.odd - 1; x.somaOdd += s.odd; }
+    else if (s.resultado === 'errada') { x.erradas++; x.lucro -= 1; x.somaOdd += s.odd; }
+    else if (!s.resultado && b.estado === 'pendente') x.pendentes++;
+  }
+  return Object.values(f).map(x => {
+    const n = x.certas + x.erradas;
+    return { ...x, n, acerto: n ? x.certas / n : null, roi: n ? x.lucro / n : null, oddMedia: n ? x.somaOdd / n : null };
+  }).sort((a, b) => b.n - a.n || a.fonte.localeCompare(b.fonte, 'pt'));
+}
+
+const pct = v => v == null ? '—' : (v * 100).toFixed(1).replace('.', ',') + '%';
+const pctSinal = v => v == null ? '—' : (v > 0 ? '+' : '') + pct(v);
+
+function blocoFontes() {
+  const est = estatisticasFontes();
+  if (!est.length) return '';
+  return `<h2 class="liga">Fontes das dicas</h2><div class="cartao">
+    <table class="fontes"><thead><tr><th>Fonte</th><th>Dicas</th><th>Acerto</th><th>Odd méd.</th><th>ROI</th></tr></thead>
+    <tbody>${est.map(x => `<tr><td title="${esc(x.fonte)}">${esc(x.fonte)}
+        ${x.n && x.n < AMOSTRA_MINIMA ? `<span class="peq">amostra pequena</span>` : ''}</td>
+      <td>${x.n}${x.pendentes ? `<span class="peq" style="color:var(--suave)">+${x.pendentes} por decidir</span>` : ''}</td>
+      <td>${pct(x.acerto)}</td>
+      <td>${x.oddMedia == null ? '—' : x.oddMedia.toFixed(2).replace('.', ',')}</td>
+      <td class="${x.roi == null ? '' : x.roi >= 0 ? 'pos' : 'neg'}">${pctSinal(x.roi)}</td></tr>`).join('')}</tbody></table>
+    <p class="nota">Cada dica conta como se apostasses 1 € nela sozinha, à odd do Placard que registaste.
+      ROI positivo significa que essa fonte teria dado lucro; o acerto sozinho não chega, porque depende das odds.
+      Com menos de ${AMOSTRA_MINIMA} dicas decididas, os números ainda são muito influenciados pela sorte.
+      Dicas anuladas não contam.</p></div>`;
 }
 
 async function copiarBoletim() {
   const t = totaisBoletim();
-  const txt = t.sels.map(s => `${s.casa} – ${s.fora}: ${s.escolha}${s.odd ? ' @ ' + s.odd : ''}`).join('\n')
+  const txt = t.sels.map(s => `${s.casa} – ${s.fora}: ${NOME_ESCOLHA[s.escolha]}${s.odd ? ' @ ' + s.odd : ''}`).join('\n')
     + (t.completo ? `\nOdd total: ${t.oddTotal.toFixed(2)}` : '') + (t.valor > 0 ? `\nValor: ${euros(t.valor)}` : '');
   try { await navigator.clipboard.writeText(txt); toast('Escolhas copiadas'); } catch (e) { toast('Não foi possível copiar'); }
 }
@@ -311,8 +432,13 @@ function avaliarSelecao(s, j, term) {
   if (ANULADOS.has(j.estado)) return 'anulada';
   const c = j.golos_90_casa ?? j.golos_casa, f = j.golos_90_fora ?? j.golos_fora;
   if (c == null || f == null) return null;
+  const e = s.escolha;
+  if (e === '+2.5') return c + f > 2.5 ? 'certa' : 'errada';
+  if (e === '-2.5') return c + f < 2.5 ? 'certa' : 'errada';
+  if (e === 'AM') return c > 0 && f > 0 ? 'certa' : 'errada';
+  if (e === 'AMN') return c > 0 && f > 0 ? 'errada' : 'certa';
   const r = c > f ? '1' : c < f ? '2' : 'X';
-  return s.escolha.includes(r) ? 'certa' : 'errada';
+  return e.includes(r) ? 'certa' : 'errada';
 }
 
 function fecharBoletim(b) {
@@ -367,17 +493,23 @@ function desenharBanca() {
     <div class="cartao">
       <label class="campo" for="limite" style="margin-top:0">Limite mensal (€)</label>
       <input class="num" id="limite" inputmode="decimal" placeholder="ex.: 50" value="${limite ?? ''}">
-      <p class="nota">A app avisa-te antes de passares este valor. Joga só o que podes perder.</p>
+      <label class="campo" for="max-bol">Máximo por boletim (€)</label>
+      <input class="num" id="max-bol" inputmode="decimal" placeholder="ex.: 5" value="${maxBoletim ?? ''}">
+      <p class="nota">A app avisa-te antes de passares estes valores. Joga só o que podes perder.</p>
     </div>
+    ${blocoFontes()}
     <h2 class="liga">Boletins</h2>
     ${boletins.length ? boletins.map(b => `<div class="cartao">
-      <div class="linha1"><div><b>${euros(b.valor)}</b> · odd ${b.oddTotal.toFixed(2).replace('.', ',')}
+      <div class="linha1"><div>${b.soDicas ? '<b>Só dicas</b> (sem aposta)' : `<b>${euros(b.valor)}</b>`} · odd ${b.oddTotal.toFixed(2).replace('.', ',')}
         <div class="info">${new Date(b.criado + 'T12:00').toLocaleDateString('pt-PT')}</div></div>
-        <span class="estado-bol ${b.estado}">${b.estado === 'ganho' ? 'Ganho ' + euros(b.retorno) : b.estado === 'perdido' ? 'Perdido' : 'Pendente'}</span></div>
-      ${b.selecoes.map(s => `<div class="bol-sel"><span>${s.resultado ? icone[s.resultado] : '⏳'} ${esc(s.casa)} – ${esc(s.fora)}</span>
-        <span>${s.escolha} @ ${Number(s.odd).toFixed(2).replace('.', ',')}</span></div>`).join('')}
+        <span class="estado-bol ${b.soDicas && b.estado !== 'pendente' ? 'so-dicas' : b.estado}">${b.soDicas
+          ? (b.estado === 'ganho' ? 'Teria ganho' : b.estado === 'perdido' ? 'Teria perdido' : 'Pendente')
+          : b.estado === 'ganho' ? 'Ganho ' + euros(b.retorno) : b.estado === 'perdido' ? 'Perdido' : 'Pendente'}</span></div>
+      ${b.selecoes.map(s => `<div class="bol-sel"><span>${s.resultado ? icone[s.resultado] : '⏳'} ${esc(s.casa)} – ${esc(s.fora)}
+          <span class="info" style="display:block">${esc(nomeFonte(s.fonte))}</span></span>
+        <span>${rotulo(s.escolha)} @ ${Number(s.odd).toFixed(2).replace('.', ',')}</span></div>`).join('')}
       <div class="acoes">
-        ${b.estado === 'pendente' ? `<button data-marcar="ganho" data-b="${b.id}">Marcar ganho</button>
+        ${b.estado === 'pendente' && !b.soDicas ? `<button data-marcar="ganho" data-b="${b.id}">Marcar ganho</button>
           <button data-marcar="perdido" data-b="${b.id}">Marcar perdido</button>` : ''}
         <button data-apagar="${b.id}">Apagar</button>
       </div></div>`).join('')
@@ -387,6 +519,8 @@ function desenharBanca() {
       Os boletins ficam guardados só neste telemóvel. <a href="/estado" style="color:inherit">Estado da recolha</a></p>`;
   document.getElementById('limite').onchange = e => { const v = num(e.target.value);
     limite = v > 0 ? v : null; guardar('limite_v1', limite); desenharBanca(); };
+  document.getElementById('max-bol').onchange = e => { const v = num(e.target.value);
+    maxBoletim = v > 0 ? v : null; guardar('max_boletim_v1', maxBoletim); desenharBanca(); };
   el.querySelectorAll('[data-marcar]').forEach(x => x.onclick = () => {
     const b = boletins.find(y => y.id === +x.dataset.b);
     b.manual = true; b.estado = x.dataset.marcar; b.retorno = b.estado === 'ganho' ? b.valor * b.oddTotal : 0;
