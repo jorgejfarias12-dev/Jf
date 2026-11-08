@@ -201,7 +201,7 @@ async function carregar(d) {
   try {
     dados = await obterDia(d, true);
     const at = dados.atualizado ? new Date(dados.atualizado).toLocaleTimeString('pt-PT', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Lisbon' }) : '—';
-    document.getElementById('sub').textContent = `Dados reais da API-Football · atualizado às ${at}`;
+    document.getElementById('sub').textContent = `Dados reais da football-data.org (com algum atraso) · atualizado às ${at}`;
   } catch (e) {
     dados = null;
     document.getElementById('sub').textContent = 'Sem ligação ao servidor. Tenta daqui a pouco.';
@@ -246,13 +246,13 @@ function linhaEquipa(nome, s, onde) {
     ? `<span class="f ${FORMA[c][1]}">${FORMA[c][0]}</span>` : '').join('');
   const l = s.local || {};
   return `<div class="st"><span class="st-nome">${s.posicao ? s.posicao + '.º ' : ''}${esc(nome)}</span>
-    <span class="forma" title="Últimos 5 jogos (mais recente à direita)">${forma}</span></div>
+    <span class="forma" title="Resultados dos últimos 5 jogos">${forma}</span></div>
     <div class="st-num">${onde}: ${l.v ?? '—'}V ${l.e ?? '—'}E ${l.d ?? '—'}D em ${l.j ?? '—'} jogos ·
       marca ${media(l.gm, l.j)} e sofre ${media(l.gs, l.j)} por jogo</div>`;
 }
 function blocoStats(j) {
-  if (!j.stats_casa && !j.stats_fora) return dados?.classificacoes_indisponiveis
-    ? '<div class="st-vazio">Classificação não disponível no plano gratuito da API.</div>'
+  if (!j.stats_casa && !j.stats_fora) return j.classificacao_indisponivel
+    ? '<div class="st-vazio">Classificação não disponível na fonte de dados para esta competição.</div>'
     : '<div class="st-vazio">Classificação ainda não recolhida.</div>';
   return `<div class="stats">${linhaEquipa(j.casa, j.stats_casa, 'Em casa')}${linhaEquipa(j.fora, j.stats_fora, 'Fora')}</div>`;
 }
