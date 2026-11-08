@@ -33,6 +33,15 @@ def iniciar():
                 valor TEXT
             )"""))
         c.execute(text("""
+            CREATE TABLE IF NOT EXISTS classificacoes (
+                liga_id INTEGER NOT NULL,
+                epoca INTEGER NOT NULL,
+                equipa_id INTEGER NOT NULL,
+                dados TEXT NOT NULL,
+                atualizado_utc TEXT NOT NULL,
+                PRIMARY KEY (liga_id, epoca, equipa_id)
+            )"""))
+        c.execute(text("""
             CREATE TABLE IF NOT EXISTS pedidos (
                 quando_utc TEXT NOT NULL,
                 endpoint TEXT NOT NULL,
@@ -98,6 +107,27 @@ def guardar_jogo(f: dict):
                           VALUES (:id, :data_local, :inicio_utc, :liga_id, :liga_nome, :pais,
                           :casa, :fora, :golos_casa, :golos_fora, :estado, :estado_longo, :minuto,
                           :atualizado_utc, :bruto)"""), reg)
+
+
+def guardar_classificacao(liga_id: int, epoca: int, linha: dict):
+    """Grava uma linha da classificação tal como veio da API."""
+    with engine.begin() as c:
+        c.execute(text("DELETE FROM classificacoes WHERE liga_id=:l AND epoca=:e AND equipa_id=:t"),
+                  {"l": liga_id, "e": epoca, "t": linha["team"]["id"]})
+        c.execute(text("""INSERT INTO classificacoes (liga_id, epoca, equipa_id, dados, atualizado_utc)
+                          VALUES (:l, :e, :t, :d, :a)"""),
+                  {"l": liga_id, "e": epoca, "t": linha["team"]["id"],
+                   "d": json.dumps(linha), "a": agora_utc().isoformat()})
+
+
+def classificacao(liga_id: int, epoca: int, equipa_id: int) -> dict | None:
+    with engine.connect() as c:
+        r = c.execute(text("""SELECT dados, atualizado_utc FROM classificacoes
+                              WHERE liga_id=:l AND epoca=:e AND equipa_id=:t"""),
+                      {"l": liga_id, "e": epoca, "t": equipa_id}).first()
+    if not r:
+        return None
+    return {**json.loads(r[0]), "_atualizado": r[1]}
 
 
 def jogos_do_dia(data_local: str):
