@@ -11,6 +11,7 @@ Estratégia (pensada para o plano gratuito de 100 pedidos/dia):
   4. Sem jogos a decorrer, só se atualiza o calendário de 6 em 6 horas.
   5. Abaixo da reserva, a recolha automática pára até a quota reiniciar.
 """
+import json
 import logging
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
@@ -62,8 +63,33 @@ def intervalo_direto(ativos: list[dict], agora: datetime, disponiveis: int) -> f
     return max(float(config.INTERVALO_MIN_DIRETO), segundos / consultas_possiveis)
 
 
-def decidir(agora: datetime, jogos_hoje: list[dict], estado: dict, disponiveis: int):
-    """Decide a próxima ação. Devolve (ação, ids) ou (None, motivo)."""
+def epoca_do_jogo(j: dict) -> int | None:
+    """Época (ano) do jogo, tal como a API a indica no registo original."""
+    try:
+        return json.loads(j["bruto"])["league"]["season"]
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def classificacao_pendente(jogos: list[dict], estado: dict, hoje: str) -> tuple[int, int] | None:
+    """Primeira liga (com jogos hoje ou amanhã) cuja classificação ainda não foi pedida hoje."""
+    feitas = estado.get("classificacoes") or {}
+    ja = set(map(tuple, feitas.get("ligas", []))) if feitas.get("data") == hoje else set()
+    for j in jogos:
+        epoca = epoca_do_jogo(j)
+        chave = (j["liga_id"], epoca)
+        if epoca is not None and chave not in ja:
+            return chave
+    return None
+
+
+def decidir(agora: datetime, jogos_hoje: list[dict], estado: dict, disponiveis: int,
+            jogos_amanha: list[dict] | None = None):
+    """Decide a próxima ação. Devolve (ação, dados) ou (None, motivo).
+
+    Prioridades: calendário do dia → jogos em direto → classificações (só com
+    folga na quota) → atualização periódica do calendário.
+    """
     if not config.API_KEY:
         return None, "Falta configurar API_FOOTBALL_KEY no alojamento."
     if disponiveis <= 0:
@@ -74,14 +100,22 @@ def decidir(agora: datetime, jogos_hoje: list[dict], estado: dict, disponiveis: 
     if estado.get("data_calendario") != hoje or ultimo_cal is None:
         return "calendario", None
 
+    espera_msg = None
     ativos = jogos_ativos(jogos_hoje, agora)
     if ativos:
         ultimo_dir = estado.get("ultimo_direto")
         espera = intervalo_direto(ativos, agora, disponiveis)
         if ultimo_dir is None or (agora - datetime.fromisoformat(ultimo_dir)).total_seconds() >= espera:
             return "direto", [j["id"] for j in ativos]
-        return None, f"Jogos a decorrer; próxima consulta dentro de {int(espera // 60)} min."
+        espera_msg = f"Jogos a decorrer; próxima consulta dentro de {int(espera // 60)} min."
 
+    if disponiveis > config.LIMIAR_CLASSIFICACOES:
+        pendente = classificacao_pendente(jogos_hoje + (jogos_amanha or []), estado, hoje)
+        if pendente:
+            return "classificacao", pendente
+
+    if espera_msg:
+        return None, espera_msg
     if (agora - datetime.fromisoformat(ultimo_cal)).total_seconds() >= config.INTERVALO_SEM_DIRETO:
         return "calendario", None
     return None, "Sem jogos a decorrer; calendário atualizado recentemente."
@@ -151,12 +185,33 @@ async def executar(acao: str, ids: list[int] | None, cliente: httpx.AsyncClient)
                 db.guardar_jogo(f)
                 gravados += 1
         db.guardar_estado("ultimo_direto", agora.isoformat())
+    elif acao == "classificacao":
+        liga, epoca = ids
+        dados = await pedir(cliente, "/standings", {"league": liga, "season": epoca})
+        for item in dados or []:
+            for grupo in item["league"].get("standings", []):
+                for linha in grupo:
+                    db.guardar_classificacao(liga, epoca, linha)
+                    gravados += 1
+        # Marca a liga como tratada hoje, mesmo com erro, para não repetir em ciclo
+        hoje = data_local(agora)
+        feitas = db.ler_estado("classificacoes") or {}
+        ligas = feitas.get("ligas", []) if feitas.get("data") == hoje else []
+        db.guardar_estado("classificacoes", {"data": hoje, "ligas": ligas + [[liga, epoca]]})
     return gravados
 
 
 def estado_atual() -> dict:
     return {k: db.ler_estado(k) for k in
-            ("data_calendario", "ultimo_calendario", "ultimo_direto", "restantes_api", "ultimo_erro")}
+            ("data_calendario", "ultimo_calendario", "ultimo_direto", "restantes_api",
+             "ultimo_erro", "classificacoes")}
+
+
+MENSAGENS = {
+    "calendario": "Calendário de hoje e amanhã atualizado ({n} jogos).",
+    "direto": "Jogos em direto atualizados ({n} jogos).",
+    "classificacao": "Classificação atualizada ({n} equipas).",
+}
 
 
 async def passo(cliente: httpx.AsyncClient) -> str:
@@ -164,11 +219,12 @@ async def passo(cliente: httpx.AsyncClient) -> str:
     agora = db.agora_utc()
     estado = estado_atual()
     disponiveis = pedidos_disponiveis(estado["restantes_api"], db.pedidos_hoje_utc())
-    acao, info = decidir(agora, db.jogos_do_dia(data_local(agora)), estado, disponiveis)
+    acao, info = decidir(agora, db.jogos_do_dia(data_local(agora)), estado, disponiveis,
+                         db.jogos_do_dia(data_local(agora + timedelta(days=1))))
     if acao is None:
         db.guardar_estado("ultima_decisao", info)
         return info
     n = await executar(acao, info, cliente)
-    msg = f"{'Calendário do dia' if acao == 'calendario' else 'Jogos em direto'} atualizado ({n} jogos)."
+    msg = MENSAGENS[acao].format(n=n)
     db.guardar_estado("ultima_decisao", msg)
     return msg
