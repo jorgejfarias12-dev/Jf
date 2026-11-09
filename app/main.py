@@ -128,6 +128,15 @@ def api_jogos(data: str | None = None):
             "jogos": jogos}
 
 
+@app.get("/api/dias")
+def api_dias():
+    """Datas com jogos guardados, desde ontem (para a página mostrar os próximos dias com jogos)."""
+    agora = db.agora_utc()
+    ontem = recolha.data_local(agora - timedelta(days=1))
+    return {"hoje": recolha.data_local(agora),
+            "dias": [{"data": d, "jogos": n} for d, n in db.dias_com_jogos(ontem)]}
+
+
 @app.get("/manifest.webmanifest")
 def manifesto():
     return JSONResponse({
