@@ -99,7 +99,7 @@
   .acoes { display:flex; gap:6px; margin-top:8px; flex-wrap:wrap; }
   .acoes button { font:inherit; font-size:.8rem; padding:6px 10px; border-radius:8px;
                   border:1px solid var(--linha); background:var(--fundo); color:var(--texto); }
-  nav { position:fixed; left:0; right:0; bottom:0; z-index:6; display:grid; grid-template-columns:repeat(3,1fr);
+  nav { position:fixed; left:0; right:0; bottom:0; z-index:6; display:grid; grid-template-columns:repeat(4,1fr);
         background:var(--cartao); border-top:1px solid var(--linha); padding-bottom:env(safe-area-inset-bottom); }
   nav button { font:inherit; font-size:.8rem; padding:10px 0 12px; border:0; background:none; color:var(--suave); }
   nav button.ativo { color:var(--marca); font-weight:700; }
@@ -119,8 +119,13 @@
 </header>
 
 <main>
+  <!-- PROPOSTAS -->
+  <section id="s-propostas" class="separador ativo">
+    <div id="propostas"></div>
+  </section>
+
   <!-- JOGOS -->
-  <section id="s-jogos" class="separador ativo">
+  <section id="s-jogos" class="separador">
     <div class="dias" id="dias"></div>
     <div id="lista"></div>
   </section>
@@ -137,7 +142,8 @@
 </main>
 
 <nav>
-  <button data-sep="jogos" class="ativo"><span class="ic">⚽</span>Jogos</button>
+  <button data-sep="propostas" class="ativo"><span class="ic">🎯</span>Propostas</button>
+  <button data-sep="jogos"><span class="ic">⚽</span>Jogos</button>
   <button data-sep="boletim"><span class="ic">🧾</span>Boletim<span id="n-sel"></span></button>
   <button data-sep="banca"><span class="ic">💶</span>Banca</button>
 </nav>
@@ -561,6 +567,17 @@ function avaliarSelecao(s, j, term) {
   return e.includes(r) ? 'certa' : 'errada';
 }
 
+// as duas fontes escrevem os nomes das equipas de forma diferente (ex.: «Sporting CP» / «Sporting Lisbon»)
+const RUIDO_NOMES = new Set(['fc','cf','sc','ac','afc','ssc','sv','fk','sk','cd','ud','rc','club','clube','de','da','do',
+  'calcio','football','futebol','real','1899','1846','1907']);
+const tokensNome = n => new Set(String(n || '').normalize('NFKD').replace(/[\u0300-\u036f]/g, '').toLowerCase()
+  .split(/[^a-z0-9]+/).filter(t => t.length >= 3 && !RUIDO_NOMES.has(t)));
+function mesmaEquipa(a, b) {
+  const ta = [...tokensNome(a)], tb = [...tokensNome(b)];
+  if (!ta.length || !tb.length) return String(a).toLowerCase() === String(b).toLowerCase();
+  return ta.some(x => tb.some(y => x === y || (Math.min(x.length, y.length) >= 4 && (x.startsWith(y) || y.startsWith(x)))));
+}
+
 function fecharBoletim(b) {
   if (b.manual) return;
   if (b.selecoes.some(s => s.resultado === 'errada')) { b.estado = 'perdido'; b.retorno = 0; return; }
@@ -578,7 +595,8 @@ async function avaliarPendentes() {
     let r; try { r = await obterDia(d, true); } catch (e) { continue; }
     const term = new Set(r.terminados);
     for (const b of pend) for (const s of b.selecoes) if (s.data === d && !s.resultado) {
-      const res = avaliarSelecao(s, r.jogos.find(j => j.id === s.id), term);
+      const res = avaliarSelecao(s, r.jogos.find(j => j.id === s.id)
+        || r.jogos.find(j => mesmaEquipa(j.casa, s.casa) && mesmaEquipa(j.fora, s.fora)), term);
       if (res) { s.resultado = res; mudou = true; }
     }
   }
@@ -660,5 +678,6 @@ contarSelecoes();
 setInterval(() => { if (document.visibilityState === 'visible' && diaAtual === dataLisboa()) carregar(diaAtual); }, 120000);
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') carregar(diaAtual || dataLisboa()); });
 </script>
+<script src="/propostas.js"></script>
 </body>
 </html>
