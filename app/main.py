@@ -11,7 +11,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.templating import Jinja2Templates
 
-from . import config, db, recolha
+from . import config, db, odds, recolha
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 modelos = Jinja2Templates(directory=str(Path(__file__).parent / "templates"))
@@ -24,6 +24,7 @@ async def ciclo_protegido():
             try:
                 async with trinco:
                     logging.getLogger("recolha").info(await recolha.passo(cliente))
+                    logging.getLogger("odds").info(await odds.passo(cliente))
             except Exception:
                 logging.getLogger("recolha").exception("Erro no ciclo de recolha")
             await asyncio.sleep(60)
@@ -32,6 +33,7 @@ async def ciclo_protegido():
 @asynccontextmanager
 async def vida(app: FastAPI):
     db.iniciar()
+    odds.iniciar()
     tarefa = asyncio.create_task(ciclo_protegido()) if config.RECOLHA_AUTOMATICA else None
     yield
     if tarefa:
@@ -135,6 +137,19 @@ def api_dias():
     ontem = recolha.data_local(agora - timedelta(days=1))
     return {"hoje": recolha.data_local(agora),
             "dias": [{"data": d, "jogos": n} for d, n in db.dias_com_jogos(ontem)]}
+
+
+@app.get("/api/propostas")
+def api_propostas(horas: int = 72):
+    """Jogos das próximas horas com as probabilidades justas do mercado de referência."""
+    return {"estado": odds.estado_publico(), "eventos": odds.eventos_futuros(min(max(horas, 1), 24 * 7)),
+            "ligas": {k: v[1] for k, v in odds.LIGAS.items()}}
+
+
+@app.get("/propostas.js")
+def propostas_js():
+    return Response((Path(__file__).parent / "static" / "propostas.js").read_text(encoding="utf-8"),
+                    media_type="application/javascript", headers={"Cache-Control": "no-cache"})
 
 
 @app.get("/manifest.webmanifest")
