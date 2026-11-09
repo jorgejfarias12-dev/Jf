@@ -4,9 +4,9 @@ Limites do plano gratuito: 10 pedidos por minuto, sem limite diário; resultados
 com atraso (não são em tempo real). A recolha faz no máximo 1 pedido por minuto.
 
 Estratégia:
-  1. Calendário: 1 pedido a /matches?dateFrom=hoje&dateTo=depois de amanhã traz
-     os jogos de hoje e de amanhã de todas as competições do plano; guardam-se só
-     as competições configuradas.
+  1. Calendário: 1 pedido a /matches de ontem até DIAS_CALENDARIO dias à frente
+     traz os jogos de todas as competições do plano (incluindo os próximos jogos
+     depois de pausas); guardam-se só as competições configuradas.
   2. Jogos a decorrer: o mesmo pedido, de INTERVALO_DIRETO em INTERVALO_DIRETO
      segundos, atualiza estado e resultado (incluindo os jogos que acabaram).
   3. Classificações: 1 pedido por competição com jogos, uma vez por dia, só
@@ -40,6 +40,7 @@ JANELA_ANTES = timedelta(minutes=5)
 JANELA_DEPOIS = timedelta(minutes=150)  # 90' + intervalo + descontos + eventual prolongamento
 ESPERA_ERRO = timedelta(minutes=15)
 ESPERA_LIMITE = timedelta(minutes=1)
+DIAS_CALENDARIO = 8   # a fonte aceita no máximo 10 dias entre dateFrom e dateTo
 
 
 def data_local(agora: datetime) -> str:
@@ -133,7 +134,7 @@ def _passou(desde: str | None, agora: datetime, segundos: float) -> bool:
 
 
 def classificacao_pendente(jogos: list[dict], estado: dict, hoje: str) -> str | None:
-    """Primeira competição (com jogos hoje ou amanhã) cuja classificação ainda não foi pedida hoje."""
+    """Primeira competição (com jogos nos próximos dias) cuja classificação ainda não foi pedida hoje."""
     feitas = estado.get("classificacoes") or {}
     ja = set(feitas.get("codigos", [])) if feitas.get("data") == hoje else set()
     for j in jogos:
@@ -211,10 +212,10 @@ async def pedir(cliente: httpx.AsyncClient, endpoint: str, params: dict | None =
 
 
 async def atualizar_jogos(cliente: httpx.AsyncClient, agora: datetime) -> int | None:
-    """Um pedido: jogos de hoje e amanhã (a fonte usa datas UTC; a margem cobre o fuso)."""
+    """Um pedido: jogos de ontem até DIAS_CALENDARIO dias à frente (a fonte usa datas UTC; a margem cobre o fuso)."""
     ini = agora.date()
-    corpo = await pedir(cliente, "/matches", {"dateFrom": ini.isoformat(),
-                                              "dateTo": (ini + timedelta(days=2)).isoformat()})
+    corpo = await pedir(cliente, "/matches", {"dateFrom": (ini - timedelta(days=1)).isoformat(),
+                                              "dateTo": (ini + timedelta(days=DIAS_CALENDARIO)).isoformat()})
     if corpo is None:
         return None
     n = 0
@@ -235,7 +236,7 @@ async def executar(acao: str, info, cliente: httpx.AsyncClient) -> str:
         db.guardar_estado("ultimo_direto" if acao == "direto" else "ultimo_calendario", agora.isoformat())
         if acao == "calendario":
             db.guardar_estado("data_calendario", hoje)
-            return f"Calendário de hoje e amanhã atualizado ({n} jogos)."
+            return f"Calendário dos próximos dias atualizado ({n} jogos)."
         return f"Jogos a decorrer atualizados ({n} jogos lidos)."
 
     if acao == "classificacao":
@@ -271,8 +272,9 @@ def estado_atual() -> dict:
 async def passo(cliente: httpx.AsyncClient) -> str:
     """Um passo do ciclo (1 por minuto): decide e, se for caso disso, faz 1 pedido."""
     agora = db.agora_utc()
-    acao, info = decidir(agora, db.jogos_do_dia(data_local(agora)), estado_atual(),
-                         db.jogos_do_dia(data_local(agora + timedelta(days=1))))
+    proximos = db.jogos_entre(data_local(agora + timedelta(days=1)),
+                              data_local(agora + timedelta(days=DIAS_CALENDARIO)))
+    acao, info = decidir(agora, db.jogos_do_dia(data_local(agora)), estado_atual(), proximos)
     msg = info if acao is None else await executar(acao, info, cliente)
     db.guardar_estado("ultima_decisao", msg)
     return msg
