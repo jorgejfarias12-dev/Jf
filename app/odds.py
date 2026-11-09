@@ -31,6 +31,13 @@ log = logging.getLogger("odds")
 CHAVE = os.getenv("ODDS_API_KEY", "").strip()
 BASE = os.getenv("ODDS_API_BASE", "https://api.the-odds-api.com/v4")
 FONTE = "The Odds API (Pinnacle / Betfair)"
+# Sem chave: odds dos próximos jogos publicadas pelo football-data.co.uk (gratuito, sem conta).
+# Referência = bolsa Betfair (BFE), sem margem. Testado com dados reais 2021–2026: +18,5% (211 apostas)
+# e +9,4% (73 apostas) no 1X2. Nos golos o resultado não se confirmou, por isso não se usa.
+FD_URL = os.getenv("FD_FIXTURES_URL", "https://www.football-data.co.uk/fixtures.csv")
+FONTE_FD = "football-data.co.uk (bolsa Betfair)"
+FD_DIVS = {"P1": "PPL", "E0": "PL", "SP1": "PD", "I1": "SA", "D1": "BL1", "F1": "FL1"}
+FD_INTERVALO = timedelta(hours=6)
 VALOR_MINIMO = float(os.getenv("VALOR_MINIMO", "0.03"))   # +3% acima da odd justa
 CREDITOS_RESERVA = int(os.getenv("ODDS_CREDITOS_RESERVA", "60"))  # não gastar abaixo disto
 HORAS_JANELA = 48
@@ -269,7 +276,71 @@ def decidir(a: datetime, estado: dict) -> tuple[str | None, str | None]:
     return None, "Odds de referência atualizadas hoje."
 
 
+def _num(v):
+    try:
+        x = float(v)
+        return x if x > 1 else None
+    except (TypeError, ValueError):
+        return None
+
+
+def normalizar_fixture(linha: dict) -> dict | None:
+    """Uma linha do fixtures.csv do football-data.co.uk → evento com probabilidades justas (bolsa Betfair)."""
+    liga = FD_DIVS.get(linha.get("Div"))
+    if not liga:
+        return None
+    probs = sem_margem({"1": _num(linha.get("BFEH")), "X": _num(linha.get("BFED")), "2": _num(linha.get("BFEA"))})
+    if not probs:
+        return None
+    try:
+        d, m, y = linha["Date"].split("/")
+        y = "20" + y if len(y) == 2 else y
+        hh, mm = (linha.get("Time") or "15:00").split(":")
+        inicio = datetime(int(y), int(m), int(d), int(hh), int(mm), tzinfo=ZoneInfo("Europe/London")).astimezone(timezone.utc)
+    except (KeyError, ValueError):
+        return None
+    casa, fora = linha["HomeTeam"], linha["AwayTeam"]
+    mercados = {k: {"prob": round(p, 4), "odd_justa": round(1 / p, 3)} for k, p in probs.items()}
+    for k, (x, z) in {"1X": ("1", "X"), "X2": ("X", "2"), "12": ("1", "2")}.items():
+        p = probs[x] + probs[z]
+        mercados[k] = {"prob": round(p, 4), "odd_justa": round(1 / p, 3)}
+    return {"id": f"fd:{liga}:{inicio.date().isoformat()}:{casa}", "liga": liga, "inicio_utc": inicio.isoformat(),
+            "data_local": data_local(inicio), "casa": casa, "fora": fora, "referencia": "betfair (bolsa)",
+            "mercados": mercados}
+
+
+async def passo_fd(cliente: httpx.AsyncClient) -> str:
+    """Sem chave da The Odds API: lê o ficheiro gratuito de próximos jogos (no máximo de 6 em 6 horas)."""
+    a = agora()
+    ultima = _estado("fd_ultima")
+    if ultima and a - datetime.fromisoformat(ultima) < FD_INTERVALO:
+        return "Odds de referência (football-data.co.uk) lidas há pouco."
+    _guardar("fd_ultima", a.isoformat())
+    try:
+        r = await cliente.get(FD_URL, timeout=30, follow_redirects=True)
+    except httpx.HTTPError as e:
+        _guardar("ultimo_erro", {"quando": a.isoformat(), "erro": f"Falha de ligação ao football-data.co.uk: {e}"})
+        return "Erro ao ler as odds do football-data.co.uk."
+    db.registar_pedido("fd:fixtures.csv", r.status_code, None, None if r.status_code == 200 else r.text[:200])
+    if r.status_code != 200:
+        _guardar("ultimo_erro", {"quando": a.isoformat(), "erro": f"football-data.co.uk HTTP {r.status_code}"})
+        return "Erro ao ler as odds do football-data.co.uk."
+    import csv
+    import io
+    texto = r.content.decode("utf-8-sig", errors="replace")
+    n = 0
+    for linha in csv.DictReader(io.StringIO(texto)):
+        ev = normalizar_fixture(linha)
+        if ev and datetime.fromisoformat(ev["inicio_utc"]) > a:
+            guardar_evento(ev)
+            n += 1
+    _guardar("ultima_atualizacao", a.isoformat())
+    return f"Odds de referência de {n} jogos lidas do football-data.co.uk."
+
+
 async def passo(cliente: httpx.AsyncClient) -> str:
+    if not CHAVE:
+        return await passo_fd(cliente)
     a = agora()
     hoje = data_local(a)
     estado = {"feitas": _estado("feitas"), "creditos": _estado("creditos_restantes"),
@@ -311,7 +382,7 @@ async def passo(cliente: httpx.AsyncClient) -> str:
 
 
 def estado_publico() -> dict:
-    return {"chave_configurada": bool(CHAVE), "fonte": FONTE, "valor_minimo": VALOR_MINIMO,
+    return {"chave_configurada": True, "fonte": FONTE if CHAVE else FONTE_FD, "valor_minimo": VALOR_MINIMO,
             "creditos_restantes": _estado("creditos_restantes"), "ultima_atualizacao": _estado("ultima_atualizacao"),
             "ultimo_erro": _estado("ultimo_erro")}
 
