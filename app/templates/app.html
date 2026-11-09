@@ -55,6 +55,14 @@
   .forma { display:flex; gap:3px; flex-shrink:0; }
   .f { width:18px; height:18px; border-radius:4px; font-size:.65rem; font-weight:800; display:grid; place-items:center; color:#fff; }
   .f.v { background:var(--verde); } .f.e { background:#8a948f; } .f.d { background:var(--vermelho); }
+  .escolhas button.sugerido:not(.sel) { border:2px solid var(--ambar); }
+  .sug { margin-top:8px; padding:8px 10px; border-radius:8px; font-size:.85rem;
+         background:color-mix(in srgb, var(--ambar) 12%, transparent); }
+  .sug small { color:var(--suave); }
+  .sug-nota { font-size:.7rem; color:var(--suave); margin-top:3px; }
+  .valor-linha { font-size:.75rem; margin-top:3px; }
+  .vl-bom { color:var(--verde); font-weight:600; } .vl-mau { color:var(--vermelho); font-weight:600; }
+  .vl-neutro { color:var(--suave); }
   .vazio { text-align:center; color:var(--suave); padding:40px 10px; }
   .cartao { background:var(--cartao); border:1px solid var(--linha); border-radius:12px; padding:12px; margin-bottom:10px; }
   .sel-linha { display:grid; grid-template-columns:1fr 84px 36px; gap:8px; align-items:center;
@@ -226,11 +234,13 @@ function desenharJogos() {
                  : acabou ? esc(j.estado === 'FT' ? 'Terminado' : j.estado_longo)
                  : horaLocal(j.inicio_utc);
     const escolhido = selecao[j.id]?.escolha;
-    const botao = e => `<button data-id="${j.id}" data-e="${e}" class="${escolhido === e ? 'sel' : ''}"
+    const sug = acabou || aoVivo ? null : sugestoes(j);
+    const sugerido = e => sug && (sug.resultado === e || sug.golos === e);
+    const botao = e => `<button data-id="${j.id}" data-e="${e}" class="${escolhido === e ? 'sel' : ''} ${sugerido(e) ? 'sugerido' : ''}"
        ${acabou || aoVivo ? 'disabled' : ''} aria-label="${NOME_ESCOLHA[e]}">${rotulo(e)}</button>`;
     return `<div class="jogo"><div class="linha1"><div><div class="equipas">${esc(j.casa)} – ${esc(j.fora)}</div>
       <div class="info">${estado}</div></div><div class="res">${res}</div></div>
-      ${blocoStats(j)}
+      ${blocoStats(j)}${blocoSugestao(j, sug)}
       <div class="escolhas">${ESCOLHAS.map(botao).join('')}</div>
       <div class="escolhas golos">${GOLOS.map(botao).join('')}</div></div>`;
   }).join('')).join('');
@@ -259,13 +269,57 @@ function blocoStats(j) {
   return `<div class="stats">${linhaEquipa(j.casa, j.stats_casa, 'Em casa')}${linhaEquipa(j.fora, j.stats_fora, 'Fora')}</div>`;
 }
 
+// ---------- sugestões (cálculo a partir dos golos reais do campeonato; é uma estimativa, não uma certeza) ----------
+const JOGOS_MINIMOS = 5;          // com menos jogos disputados não se sugere nada
+const PROB_SIMPLES = 0.55;        // só se sugere 1, X ou 2 sozinho a partir desta probabilidade
+const pctInt = p => Math.round(p * 100) + '%';
+const oddJusta = p => (1 / p).toFixed(2).replace('.', ',');
+function registoGeral(s) {
+  if (!s) return null;
+  const l = (s.local && s.local.j != null) ? s.local : s.total;
+  return l && l.j >= JOGOS_MINIMOS && l.gm != null && l.gs != null ? l : null;
+}
+function probabilidades(j) {
+  const c = registoGeral(j.stats_casa), f = registoGeral(j.stats_fora);
+  if (!c || !f) return null;
+  // golos esperados: ataque de uma equipa combinado com a defesa da outra
+  const lc = (c.gm / c.j + f.gs / f.j) / 2, lf = (f.gm / f.j + c.gs / c.j) / 2;
+  const pois = (l, k) => { let p = Math.exp(-l); for (let i = 1; i <= k; i++) p *= l / i; return p; };
+  let p1 = 0, px = 0, p2 = 0, menos = 0;
+  for (let a = 0; a <= 10; a++) for (let b = 0; b <= 10; b++) {
+    const p = pois(lc, a) * pois(lf, b);
+    if (a > b) p1 += p; else if (a === b) px += p; else p2 += p;
+    if (a + b <= 2) menos += p;
+  }
+  const am = (1 - Math.exp(-lc)) * (1 - Math.exp(-lf));
+  return { '1': p1, 'X': px, '2': p2, '1X': p1 + px, 'X2': px + p2, '12': p1 + p2,
+           '+2.5': 1 - menos, '-2.5': menos, 'AM': am, 'AMN': 1 - am, _lc: lc, _lf: lf };
+}
+function sugestoes(j) {
+  const p = probabilidades(j);
+  if (!p) return null;
+  const melhor = lista => lista.reduce((a, b) => p[b] > p[a] ? b : a);
+  const simples = melhor(['1', 'X', '2']);
+  const resultado = p[simples] >= PROB_SIMPLES ? simples : melhor(['1X', 'X2', '12']);
+  const golos = melhor(['+2.5', '-2.5', 'AM', 'AMN']);
+  return { p, resultado, golos };
+}
+function blocoSugestao(j, s) {
+  if (!s) return '';
+  const item = e => `<b>${rotulo(e)}</b> ${pctInt(s.p[e])} <small>(odd justa ${oddJusta(s.p[e])})</small>`;
+  return `<div class="sug">💡 Sugestão: ${item(s.resultado)} · ${item(s.golos)}
+    <div class="sug-nota">Golos esperados ${s.p._lc.toFixed(1).replace('.', ',')}–${s.p._lf.toFixed(1).replace('.', ',')}.
+    Só compensa apostar se a odd do Placard for maior que a odd justa.</div></div>`;
+}
+
 function escolher(id, e) {
   const j = dados.jogos.find(x => x.id === id);
   if (selecao[id]?.escolha === e) { delete selecao[id]; toast('Retirado do boletim'); }
   else {
+    const p = probabilidades(j);
     selecao[id] = { id, data: j.data_local, casa: j.casa, fora: j.fora, liga: j.liga_nome,
-                    inicio: j.inicio_utc, escolha: e, odd: selecao[id]?.odd ?? '',
-                    fonte: selecao[id]?.fonte ?? ultimaFonte };
+                    inicio: j.inicio_utc, escolha: e, odd: selecao[id]?.escolha === e ? selecao[id].odd : '',
+                    fonte: selecao[id]?.fonte ?? ultimaFonte, prob: p ? p[e] : null };
     toast(`${rotulo(e)} · ${j.casa} – ${j.fora}`);
   }
   guardar('selecao_v1', selecao); contarSelecoes(); desenharJogos();
@@ -295,11 +349,16 @@ function desenharBoletim() {
   const el = document.getElementById('boletim');
   const sels = Object.values(selecao).sort((a, b) => a.inicio.localeCompare(b.inicio));
   if (!sels.length) {
-    el.innerHTML = `<div class="vazio">O boletim está vazio.<br>No separador <b>Jogos</b>, toca em 1, X ou 2 para juntar escolhas.</div>`;
+    el.innerHTML = `<div class="vazio">O boletim está vazio.<br>No separador <b>Jogos</b>, toca em 1, X ou 2 para juntar escolhas,
+      ou deixa a app propor as escolhas mais prováveis.</div>
+      <button class="botao" id="juntar-sug">💡 Juntar as sugestões da app</button>
+      <p class="nota">${NOTA_SUGESTOES}</p>`;
+    document.getElementById('juntar-sug').onclick = juntarSugestoes;
     return;
   }
   el.innerHTML = `<div class="cartao">${sels.map(s => `<div class="sel-linha">
-      <div class="sel-nome"><b>${esc(s.casa)} – ${esc(s.fora)}</b>${NOME_ESCOLHA[s.escolha]} · ${horaLocal(s.inicio)}</div>
+      <div class="sel-nome"><b>${esc(s.casa)} – ${esc(s.fora)}</b>${NOME_ESCOLHA[s.escolha]} · ${horaLocal(s.inicio)}
+        <div class="valor-linha" data-vl="${s.id}">${textoValor(s)}</div></div>
       <input class="num" inputmode="decimal" placeholder="odd" value="${esc(s.odd)}" data-odd="${s.id}" aria-label="Odd">
       <button class="x" data-tirar="${s.id}" aria-label="Retirar">✕</button>
       <input class="num fonte" list="lista-fontes" placeholder="Fonte da dica (ex.: nome do analista)"
@@ -314,6 +373,7 @@ function desenharBoletim() {
       </div>
       <div id="aviso-limite"></div>
       <button class="botao" id="guardar">Guardar boletim</button>
+      <button class="botao sec" id="juntar-sug">💡 Juntar mais sugestões da app</button>
       <button class="botao sec" id="so-dicas">Só registar as dicas (sem apostar)</button>
       <button class="botao sec" id="copiar">Copiar escolhas</button>
       <button class="botao sec" id="limpar">Limpar boletim</button>
@@ -327,7 +387,9 @@ function desenharBoletim() {
     guardar('selecao_v1', selecao); guardar('ultima_fonte_v1', ultimaFonte); });
   document.getElementById('so-dicas').onclick = guardarSoDicas;
   el.querySelectorAll('[data-odd]').forEach(i => i.oninput = () => {
-    selecao[i.dataset.odd].odd = i.value; guardar('selecao_v1', selecao); atualizarTotais(); });
+    const s = selecao[i.dataset.odd]; s.odd = i.value; guardar('selecao_v1', selecao); atualizarTotais();
+    const vl = el.querySelector(`[data-vl="${s.id}"]`); if (vl) vl.innerHTML = textoValor(s); });
+  document.getElementById('juntar-sug').onclick = juntarSugestoes;
   el.querySelectorAll('[data-tirar]').forEach(b => b.onclick = () => {
     delete selecao[b.dataset.tirar]; guardar('selecao_v1', selecao); contarSelecoes(); desenharBoletim(); });
   document.getElementById('valor').oninput = e => { valorBoletim = e.target.value; guardar('valor_v1', valorBoletim); atualizarTotais(); };
@@ -336,6 +398,46 @@ function desenharBoletim() {
   document.getElementById('limpar').onclick = () => { if (confirm('Limpar todas as escolhas?')) {
     selecao = {}; guardar('selecao_v1', selecao); contarSelecoes(); desenharBoletim(); } };
   atualizarTotais();
+}
+
+const FONTE_APP = 'Sugestão da app';
+const PROB_JUNTAR = 0.65;   // só se juntam ao boletim sugestões com pelo menos esta probabilidade estimada
+const MAX_JUNTAR = 3;       // quantas sugestões se juntam de cada vez (menos escolhas = menos risco)
+const NOTA_SUGESTOES = `As sugestões vêm de um cálculo com os golos marcados e sofridos por cada equipa no campeonato
+  (dados reais da fonte). São estimativas, não certezas: não sabem de lesões, castigos ou motivação. Só compensam se a odd do
+  Placard for maior que a «odd justa». A fonte fica registada como «${FONTE_APP}», para veres na Banca se acerta ou não.`;
+
+function textoValor(s) {
+  if (s.prob == null) return '<span class="vl-neutro">Sem estimativa (poucos dados da equipa).</span>';
+  const base = `Estimativa ${pctInt(s.prob)} · odd justa ${oddJusta(s.prob)}`;
+  const odd = num(s.odd);
+  if (!(odd >= 1.01)) return `<span class="vl-neutro">${base}</span>`;
+  const ganho = s.prob * odd - 1;
+  return ganho > 0
+    ? `<span class="vl-bom">✅ ${base} · compensa (+${Math.round(ganho * 100)}% esperado)</span>`
+    : `<span class="vl-mau">⚠️ ${base} · odd baixa, não compensa (${Math.round(ganho * 100)}%)</span>`;
+}
+
+async function juntarSugestoes() {
+  const agora = Date.now(), candidatos = [];
+  for (const d of [dataLisboa(0), dataLisboa(1)]) {
+    let r; try { r = await obterDia(d); } catch (e) { continue; }
+    const term = new Set(r.terminados), vivo = new Set(r.a_decorrer);
+    for (const j of r.jogos) {
+      if (selecao[j.id] || candidatos.some(c => c.j.id === j.id) || term.has(j.estado) || vivo.has(j.estado) || new Date(j.inicio_utc) <= agora) continue;
+      const s = sugestoes(j);
+      if (s && s.p[s.resultado] >= PROB_JUNTAR) candidatos.push({ j, e: s.resultado, p: s.p[s.resultado] });
+    }
+  }
+  candidatos.sort((a, b) => b.p - a.p);
+  const escolhidos = candidatos.slice(0, MAX_JUNTAR);
+  if (!escolhidos.length) { toast('Não há sugestões fortes para hoje e amanhã'); return; }
+  for (const { j, e, p } of escolhidos)
+    selecao[j.id] = { id: j.id, data: j.data_local, casa: j.casa, fora: j.fora, liga: j.liga_nome,
+                      inicio: j.inicio_utc, escolha: e, odd: '', fonte: FONTE_APP, prob: p };
+  guardar('selecao_v1', selecao); contarSelecoes(); desenharBoletim();
+  if (dados) desenharJogos();
+  toast(`${escolhidos.length} sugest${escolhidos.length > 1 ? 'ões juntadas' : 'ão juntada'} — escreve as odds do Placard`);
 }
 
 function atualizarTotais() {
