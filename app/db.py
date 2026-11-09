@@ -126,3 +126,19 @@ def jogos_do_dia(data_local: str):
     with engine.connect() as c:
         return [dict(r._mapping) for r in c.execute(text(
             "SELECT * FROM partidas WHERE data_local=:d ORDER BY inicio_utc, liga_nome"), {"d": data_local})]
+
+
+def jogos_entre(desde: str, ate: str):
+    """Jogos com data local entre as duas datas (inclusive), por ordem de início."""
+    with engine.connect() as c:
+        return [dict(r._mapping) for r in c.execute(text(
+            "SELECT * FROM partidas WHERE data_local BETWEEN :a AND :b ORDER BY inicio_utc"),
+            {"a": desde, "b": ate})]
+
+
+def dias_com_jogos(desde: str):
+    """[(data_local, número de jogos)] a partir de uma data."""
+    with engine.connect() as c:
+        return [(r[0], r[1]) for r in c.execute(text(
+            "SELECT data_local, COUNT(*) FROM partidas WHERE data_local >= :d "
+            "GROUP BY data_local ORDER BY data_local"), {"d": desde})]
