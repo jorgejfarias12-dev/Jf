@@ -9,6 +9,8 @@ Estratégia:
      depois de pausas); guardam-se só as competições configuradas.
   2. Jogos a decorrer: o mesmo pedido, de INTERVALO_DIRETO em INTERVALO_DIRETO
      segundos, atualiza estado e resultado (incluindo os jogos que acabaram).
+  2b. Próximos jogos: 1 pedido por competição e por dia a /competitions/{código}/matches
+     (até DIAS_PROXIMOS dias), para mostrar a próxima jornada mesmo nas pausas.
   3. Classificações: 1 pedido por competição com jogos, uma vez por dia, só
      quando não há atualização de direto pendente.
   4. Erros: a recolha espera 15 minutos antes de tentar de novo (1 minuto se o
@@ -41,6 +43,7 @@ JANELA_DEPOIS = timedelta(minutes=150)  # 90' + intervalo + descontos + eventual
 ESPERA_ERRO = timedelta(minutes=15)
 ESPERA_LIMITE = timedelta(minutes=1)
 DIAS_CALENDARIO = 8   # a fonte aceita no máximo 10 dias entre dateFrom e dateTo
+DIAS_PROXIMOS = 28    # jogos marcados por competição (mostra a próxima jornada mesmo em pausas)
 
 
 def data_local(agora: datetime) -> str:
@@ -144,6 +147,16 @@ def classificacao_pendente(jogos: list[dict], estado: dict, hoje: str) -> str | 
     return None
 
 
+def proximos_pendente(estado: dict, hoje: str) -> str | None:
+    """Primeira competição cujos próximos jogos (até DIAS_PROXIMOS dias) ainda não foram pedidos hoje."""
+    feitas = estado.get("proximos") or {}
+    ja = set(feitas.get("codigos", [])) if feitas.get("data") == hoje else set()
+    for cod in config.COMPETICOES:
+        if cod not in ja:
+            return cod
+    return None
+
+
 def decidir(agora: datetime, jogos_hoje: list[dict], estado: dict, jogos_amanha: list[dict] | None = None):
     """Decide a próxima ação. Devolve (ação, dados) ou (None, motivo).
 
@@ -161,6 +174,9 @@ def decidir(agora: datetime, jogos_hoje: list[dict], estado: dict, jogos_amanha:
     ativos = jogos_ativos(jogos_hoje, agora)
     if ativos and _passou(estado.get("ultimo_direto"), agora, config.INTERVALO_DIRETO):
         return "direto", None
+    prox = proximos_pendente(estado, hoje)
+    if prox:
+        return "proximos", prox
     pendente = classificacao_pendente(jogos_hoje + (jogos_amanha or []), estado, hoje)
     if pendente:
         return "classificacao", pendente
@@ -239,6 +255,26 @@ async def executar(acao: str, info, cliente: httpx.AsyncClient) -> str:
             return f"Calendário dos próximos dias atualizado ({n} jogos)."
         return f"Jogos a decorrer atualizados ({n} jogos lidos)."
 
+    if acao == "proximos":
+        codigo = info
+        ini = agora.date()
+        corpo = await pedir(cliente, f"/competitions/{codigo}/matches",
+                            {"dateFrom": ini.isoformat(), "dateTo": (ini + timedelta(days=DIAS_PROXIMOS)).isoformat()})
+        feitas = db.ler_estado("proximos") or {}
+        codigos = feitas.get("codigos", []) if feitas.get("data") == hoje else []
+        db.guardar_estado("proximos", {"data": hoje, "codigos": codigos + [codigo]})
+        if corpo is None:
+            erro = db.ler_estado("ultimo_erro") or {}
+            if erro.get("http") != 429:
+                db.guardar_estado("proxima_tentativa", None)  # não atrasar o resto da recolha
+            return f"Próximos jogos de {codigo} indisponíveis."
+        n = 0
+        for m in corpo.get("matches") or []:
+            m.setdefault("competition", corpo.get("competition") or {})
+            db.guardar_jogo(normalizar_jogo(m))
+            n += 1
+        return f"Próximos jogos de {codigo} atualizados ({n} jogos)."
+
     if acao == "classificacao":
         codigo = info
         corpo = await pedir(cliente, f"/competitions/{codigo}/standings")
@@ -266,14 +302,14 @@ async def executar(acao: str, info, cliente: httpx.AsyncClient) -> str:
 def estado_atual() -> dict:
     return {k: db.ler_estado(k) for k in
             ("data_calendario", "ultimo_calendario", "ultimo_direto", "restantes_minuto",
-             "ultimo_erro", "classificacoes", "classificacoes_bloqueadas", "proxima_tentativa")}
+             "ultimo_erro", "classificacoes", "classificacoes_bloqueadas", "proxima_tentativa", "proximos")}
 
 
 async def passo(cliente: httpx.AsyncClient) -> str:
     """Um passo do ciclo (1 por minuto): decide e, se for caso disso, faz 1 pedido."""
     agora = db.agora_utc()
     proximos = db.jogos_entre(data_local(agora + timedelta(days=1)),
-                              data_local(agora + timedelta(days=DIAS_CALENDARIO)))
+                              data_local(agora + timedelta(days=DIAS_PROXIMOS)))
     acao, info = decidir(agora, db.jogos_do_dia(data_local(agora)), estado_atual(), proximos)
     msg = info if acao is None else await executar(acao, info, cliente)
     db.guardar_estado("ultima_decisao", msg)
