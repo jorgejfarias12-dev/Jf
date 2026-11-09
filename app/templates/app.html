@@ -191,9 +191,18 @@ function abrir(sep) {
 
 // ---------- jogos ----------
 const DIAS = [[-1, 'Ontem'], [0, 'Hoje'], [1, 'Amanhã']];
+let diasComJogos = [];                    // [{data, jogos}] vindos do servidor
+const nomeDia = d => new Date(d + 'T12:00:00Z').toLocaleDateString('pt-PT',
+  { weekday: 'short', day: '2-digit', month: '2-digit', timeZone: 'UTC' }).replace('.', '');
+async function obterDias() {
+  try { const r = await fetch('/api/dias', { cache: 'no-store' }); if (r.ok) diasComJogos = (await r.json()).dias; } catch (e) {}
+}
+const proximosDiasComJogos = () => diasComJogos.filter(x => x.data >= dataLisboa(0) && x.jogos > 0).map(x => x.data);
 function desenharDias() {
-  document.getElementById('dias').innerHTML = DIAS.map(([d, n]) =>
-    `<button class="chip ${dataLisboa(d) === diaAtual ? 'ativo' : ''}" data-d="${dataLisboa(d)}">${n}</button>`).join('');
+  const fixos = DIAS.map(([d, n]) => [dataLisboa(d), n]);
+  const extra = proximosDiasComJogos().filter(d => d > dataLisboa(1)).slice(0, 6).map(d => [d, nomeDia(d)]);
+  document.getElementById('dias').innerHTML = [...fixos, ...extra].map(([d, n]) =>
+    `<button class="chip ${d === diaAtual ? 'ativo' : ''}" data-d="${d}">${n}</button>`).join('');
   document.querySelectorAll('#dias .chip').forEach(b => b.onclick = () => carregar(b.dataset.d));
 }
 
@@ -208,6 +217,7 @@ async function carregar(d) {
   diaAtual = d; desenharDias();
   try {
     dados = await obterDia(d, true);
+    await obterDias(); desenharDias();
     const at = dados.atualizado ? new Date(dados.atualizado).toLocaleTimeString('pt-PT', { hour: '2-digit', minute: '2-digit', timeZone: 'Europe/Lisbon' }) : '—';
     document.getElementById('sub').textContent = `Dados reais da football-data.org (com algum atraso) · atualizado às ${at}`;
   } catch (e) {
@@ -220,8 +230,11 @@ async function carregar(d) {
 function desenharJogos() {
   const lista = document.getElementById('lista');
   if (!dados || !dados.jogos.length) {
-    lista.innerHTML = `<div class="vazio">Sem jogos guardados para este dia nas ligas acompanhadas.<br>
-      <small>A recolha só guarda o dia atual; dias anteriores podem não estar disponíveis.</small></div>`;
+    const prox = proximosDiasComJogos().find(d => d > diaAtual);
+    lista.innerHTML = `<div class="vazio">Não há jogos neste dia nas ligas acompanhadas.<br>
+      ${prox ? `<button class="chip ativo" style="margin-top:12px" id="ir-prox">Ver os próximos jogos (${nomeDia(prox)})</button>`
+             : '<small>A fonte ainda não tem jogos marcados para os próximos dias (pode ser pausa para as seleções).</small>'}</div>`;
+    if (prox) document.getElementById('ir-prox').onclick = () => carregar(prox);
     return;
   }
   const term = new Set(dados.terminados), vivo = new Set(dados.a_decorrer);
@@ -420,7 +433,8 @@ function textoValor(s) {
 
 async function juntarSugestoes() {
   const agora = Date.now(), candidatos = [];
-  for (const d of [dataLisboa(0), dataLisboa(1)]) {
+  await obterDias();
+  for (const d of proximosDiasComJogos().slice(0, 3)) {
     let r; try { r = await obterDia(d); } catch (e) { continue; }
     const term = new Set(r.terminados), vivo = new Set(r.a_decorrer);
     for (const j of r.jogos) {
@@ -431,7 +445,7 @@ async function juntarSugestoes() {
   }
   candidatos.sort((a, b) => b.p - a.p);
   const escolhidos = candidatos.slice(0, MAX_JUNTAR);
-  if (!escolhidos.length) { toast('Não há sugestões fortes para hoje e amanhã'); return; }
+  if (!escolhidos.length) { toast('Não há sugestões fortes para os próximos jogos'); return; }
   for (const { j, e, p } of escolhidos)
     selecao[j.id] = { id: j.id, data: j.data_local, casa: j.casa, fora: j.fora, liga: j.liga_nome,
                       inicio: j.inicio_utc, escolha: e, odd: '', fonte: FONTE_APP, prob: p };
@@ -637,7 +651,12 @@ function desenharBanca() {
 
 // ---------- arranque ----------
 contarSelecoes();
-carregar(dataLisboa());
+(async () => {
+  await obterDias();
+  // se hoje não houver jogos, abre o primeiro dia seguinte que tenha
+  const hoje = dataLisboa(), comJogos = proximosDiasComJogos();
+  carregar(comJogos.includes(hoje) || !comJogos.length ? hoje : comJogos[0]);
+})();
 setInterval(() => { if (document.visibilityState === 'visible' && diaAtual === dataLisboa()) carregar(diaAtual); }, 120000);
 document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') carregar(diaAtual || dataLisboa()); });
 </script>
